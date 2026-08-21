@@ -1,0 +1,118 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover,user-scalable=no" />
+  <meta name="theme-color" content="#090b10" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <meta name="apple-mobile-web-app-title" content="Lotto Edge" />
+  <link rel="manifest" href="manifest.webmanifest" />
+  <link rel="apple-touch-icon" href="icon-192.png" />
+  <link rel="stylesheet" href="app.css" />
+  <title>Lotto Edge</title>
+</head>
+<body>
+<div class="app-shell">
+  <header class="topbar">
+    <div>
+      <div class="eyebrow">UK LOTTO · 6 / 59</div>
+      <h1>Lotto Edge</h1>
+    </div>
+    <button id="installBtn" class="icon-btn hidden" aria-label="Install app">＋</button>
+  </header>
+
+  <main>
+    <section id="pickScreen" class="screen active">
+      <div class="hero-card">
+        <div class="hero-top">
+          <div>
+            <span class="label">Strategy</span>
+            <select id="strategy">
+              <option>Balanced</option>
+              <option>Low sharing risk</option>
+              <option>Hot numbers</option>
+              <option>Overdue numbers</option>
+              <option>Pure random</option>
+            </select>
+          </div>
+          <div class="lines-control">
+            <span class="label">Lines</span>
+            <div class="stepper">
+              <button id="minusLine">−</button><span id="lineCount">5</span><button id="plusLine">＋</button>
+            </div>
+          </div>
+        </div>
+        <p id="strategyInfo" class="muted"></p>
+        <button id="generateBtn" class="generate">GENERATE MY NUMBERS</button>
+      </div>
+
+      <div class="stats-strip">
+        <div><span id="drawCount">0</span><small>draws</small></div>
+        <div><span id="hotNumber">—</span><small>hot</small></div>
+        <div><span id="overdueNumber">—</span><small>overdue</small></div>
+      </div>
+
+      <section id="results"></section>
+      <p class="legal">Every valid line has the same mathematical probability in a fair draw. Strategy scores are analytical rankings, not win probabilities.</p>
+    </section>
+
+    <section id="statsScreen" class="screen">
+      <div class="section-head">
+        <h2>Number analysis</h2>
+        <button id="refreshBtn" class="secondary">Check updates</button>
+      </div>
+      <div id="updateStatus" class="status"></div>
+      <div class="segmented">
+        <button data-stat="hot" class="active">Hot</button>
+        <button data-stat="overdue">Overdue</button>
+        <button data-stat="pairs">Pairs</button>
+      </div>
+      <div id="statList" class="stat-list"></div>
+    </section>
+
+    <section id="historyScreen" class="screen">
+      <div class="section-head">
+        <h2>My picks</h2>
+        <button id="clearHistory" class="secondary danger">Clear</button>
+      </div>
+      <div id="ticketHistory"></div>
+    </section>
+
+    <section id="settingsScreen" class="screen">
+      <h2>Data & app</h2>
+
+      <div class="settings-card">
+        <h3>Historical data</h3>
+        <p class="muted">The app stores draw history locally on this phone. You can import a CSV at any time.</p>
+        <input type="file" id="csvInput" accept=".csv,text/csv" />
+        <button id="importBtn" class="secondary wide">Import CSV</button>
+        <div id="importStatus" class="status"></div>
+      </div>
+
+      <div class="settings-card">
+        <h3>Optional live update source</h3>
+        <p class="muted">Paste a public CSV URL if you want Lotto Edge to check for new draws only when you open the app or tap Check updates.</p>
+        <input id="updateUrl" type="url" placeholder="https://example.com/lotto.csv" />
+        <button id="saveUrlBtn" class="secondary wide">Save update source</button>
+        <div id="urlStatus" class="status"></div>
+      </div>
+
+      <div class="settings-card">
+        <h3>Offline mode</h3>
+        <p class="muted">Once installed, the interface, number engine, saved picks and local draw database work without internet.</p>
+      </div>
+    </section>
+  </main>
+
+  <nav class="bottom-nav">
+    <button data-screen="pickScreen" class="active"><b>🎯</b><span>Pick</span></button>
+    <button data-screen="statsScreen"><b>📊</b><span>Stats</span></button>
+    <button data-screen="historyScreen"><b>🧾</b><span>My Picks</span></button>
+    <button data-screen="settingsScreen"><b>⚙️</b><span>Settings</span></button>
+  </nav>
+</div>
+
+<script src="app.js"></script>
+</body>
+</html>
