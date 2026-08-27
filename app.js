@@ -1,7 +1,7 @@
 
 const $ = s => document.querySelector(s);
 
-const APP_VERSION="16.0.0";
+const APP_VERSION="17.0.0";
 
 async function checkAppVersionInBackground(){
   try{
@@ -1175,14 +1175,13 @@ function matchCount(a,b){return a.filter(n=>b.includes(n)).length}
 function quickModelLine(history,weightsOverride=null,modeOverride=null){
   const saved=getModelWeights();
   if(weightsOverride)saveModelWeights(weightsOverride);
-  const result=generateSmartLines(history,"Edge AI",1,900,modeOverride)[0];
+  const result=generateSmartLines(history,"Edge AI",1,700,modeOverride)[0];
   if(weightsOverride)saveModelWeights(saved);
   return result;
 }
 
 function weightCandidates(){
-  // Small, interpretable grid around the default model.
-  const sets=[
+  return [
     {...DEFAULT_WEIGHTS},
     {historical:.16,recent:.28,overdue:.12,pairStrength:.16,structure:.20,sharing:.08},
     {historical:.24,recent:.16,overdue:.10,pairStrength:.22,structure:.20,sharing:.08},
@@ -1190,10 +1189,9 @@ function weightCandidates(){
     {historical:.18,recent:.20,overdue:.10,pairStrength:.16,structure:.28,sharing:.08},
     {historical:.22,recent:.22,overdue:.12,pairStrength:.18,structure:.18,sharing:.08}
   ];
-  return sets;
 }
 
-async function evaluateWeights(weights,testCount=60){
+async function evaluateWeights(weights,testCount=50){
   const cfg=GAMES[activeGame];
   const tests=Math.min(testCount,draws.length-80);
   if(tests<=0)return {score:-Infinity,avg:0,two:0,three:0,four:0,five:0};
@@ -1210,7 +1208,6 @@ async function evaluateWeights(weights,testCount=60){
     if(t%8===0)await new Promise(r=>setTimeout(r,0));
   }
   const avg=matches/tests;
-  // Weighted evaluation favours rarer higher-match events.
   const score=avg + two*.004 + three*.02 + four*.10 + five*.50 + stars*.003;
   return {score,avg,two,three,four,five,stars,tests};
 }
@@ -1228,7 +1225,7 @@ async function calibrateWeights(){
   let best=null;
   for(let i=0;i<sets.length;i++){
     $("#backtestStatus").textContent=`Calibration ${i+1}/${sets.length}…`;
-    const res=await evaluateWeights(sets[i],60);
+    const res=await evaluateWeights(sets[i],50);
     if(!best || res.score>best.res.score)best={weights:sets[i],res};
   }
 
@@ -1238,8 +1235,7 @@ async function calibrateWeights(){
   button.disabled=false;
 }
 
-
-async function evaluateConcentration(mode,testCount=50){
+async function evaluateConcentration(mode,testCount=40){
   const cfg=GAMES[activeGame];
   const tests=Math.min(testCount,draws.length-80);
   if(tests<=0)return {score:-Infinity};
@@ -1249,10 +1245,7 @@ async function evaluateConcentration(mode,testCount=50){
   for(let t=0;t<tests;t++){
     const target=draws[t];
     const history=draws.slice(t+1);
-
-    // Three-line historical portfolio keeps calibration mobile-friendly while still
-    // measuring concentration vs diversification behaviour.
-    const ticket=generateSmartLines(history,"Edge AI",3,1400,mode);
+    const ticket=generateSmartLines(history,"Edge AI",3,1000,mode);
 
     let bestMain=0,bestStars=0;
     for(const pick of ticket){
@@ -1266,21 +1259,12 @@ async function evaluateConcentration(mode,testCount=50){
     if(bestMain>=4)fourPlus++;
     stars+=bestStars;
     coverage+=(ticket.portfolio?.score||0);
-
     if(t%5===0)await new Promise(r=>setTimeout(r,0));
   }
 
   const avg=mainMatches/tests;
   const avgCoverage=coverage/tests;
-
-  // Reward actual historical hit behaviour first; coverage is only a small tiebreaker.
-  const score=
-    avg+
-    threePlus*.025+
-    fourPlus*.18+
-    stars*.004+
-    avgCoverage*.0004;
-
+  const score=avg+threePlus*.025+fourPlus*.18+stars*.004+avgCoverage*.0004;
   return {score,avg,threePlus,fourPlus,stars,avgCoverage,tests};
 }
 
@@ -1297,15 +1281,13 @@ async function calibrateConcentration(){
 
   for(let i=0;i<modes.length;i++){
     $("#backtestStatus").textContent=`Testing portfolio style ${i+1}/${modes.length}: ${modes[i]}…`;
-    const res=await evaluateConcentration(modes[i],45);
+    const res=await evaluateConcentration(modes[i],40);
     if(!best||res.score>best.res.score)best={mode:modes[i],res};
   }
 
-  // Auto uses the calibrated preference as a bias while still adapting draw-by-draw.
   localStorage.setItem(`lottoEdgeCalibratedConcentration:${activeGame}`,best.mode);
   saveConcentrationMode("auto");
   $("#concentrationMode").value="auto";
-
   $("#backtestStatus").textContent=
     `Portfolio calibration complete. Historical preference: ${best.mode}. `+
     `Best-draw average ${best.res.avg.toFixed(3)} main matches over ${best.res.tests} tests. `+
@@ -1315,68 +1297,201 @@ async function calibrateConcentration(){
   renderConcentrationInfo();
 }
 
+function randomPortfolio(cfg,count){
+  return Array.from({length:count},()=>({
+    line:sample(cfg.max,cfg.picks),
+    stars:sample(cfg.starMax,cfg.stars)
+  }));
+}
+
+function portfolioOutcome(ticket,target,cfg){
+  let bestMain=0,bestStars=0,totalMain=0,totalStars=0;
+  let tiers={m0:0,m1:0,m2:0,m3:0,m4:0,m5:0,stars1:0,stars2:0};
+
+  for(const pick of ticket){
+    const m=matchCount(pick.line,target.numbers);
+    const s=cfg.stars?matchCount(pick.stars||[],target.stars||[]):0;
+    bestMain=Math.max(bestMain,m);
+    bestStars=Math.max(bestStars,s);
+    totalMain+=m;totalStars+=s;
+    tiers[`m${Math.min(5,m)}`]++;
+    if(s>=1)tiers.stars1++;
+    if(s>=2)tiers.stars2++;
+  }
+
+  return {bestMain,bestStars,totalMain,totalStars,tiers};
+}
+
+function percentile(value,arr){
+  if(!arr.length)return 0;
+  const below=arr.filter(x=>x<=value).length;
+  return 100*below/arr.length;
+}
+
+function correlation(xs,ys){
+  if(xs.length!==ys.length || xs.length<3)return 0;
+  const mx=mean(xs),my=mean(ys);
+  const num=xs.reduce((s,x,i)=>s+(x-mx)*(ys[i]-my),0);
+  const dx=Math.sqrt(xs.reduce((s,x)=>s+(x-mx)**2,0));
+  const dy=Math.sqrt(ys.reduce((s,y)=>s+(y-my)**2,0));
+  return dx&&dy?num/(dx*dy):0;
+}
+
 async function runBacktest(){
   const requested=Number($("#testSize").value);
+  const controls=Number($("#controlRuns").value);
   if(draws.length<80){
     $("#backtestStatus").textContent="Not enough history for a useful backtest.";
     return;
   }
 
   const tests=Math.min(requested,draws.length-60);
-  $("#backtestStatus").textContent=`Running ${tests} walk-forward tests…`;
+  const cfg=GAMES[activeGame];
+  const linesPerTicket=Math.min(5,lineCount);
+
+  $("#backtestStatus").textContent=`Running ${tests} walk-forward tests with ${controls} random controls each…`;
   $("#backtestResults").innerHTML=`<div class="progress"><i id="btProgress" style="width:0%"></i></div>`;
 
-  const cfg=GAMES[activeGame];
-  const edge={matches:0,starMatches:0,two:0,three:0,four:0,five:0};
-  const rnd={matches:0,starMatches:0,two:0,three:0,four:0,five:0};
+  let edgeBestMain=0,edgeTotalMain=0,edgeStars=0;
+  let randomBestMain=0,randomTotalMain=0,randomStars=0;
+  let edge2=0,edge3=0,edge4=0,edge5=0;
+  let random2=0,random3=0,random4=0,random5=0;
+  let percentileSum=0,percentileBestSum=0;
+  const edgeScores=[],futureHits=[];
 
   for(let t=0;t<tests;t++){
     const target=draws[t];
     const history=draws.slice(t+1);
     if(history.length<60)break;
 
-    const edgePick=quickModelLine(history);
-    const randPick={line:sample(cfg.max,cfg.picks),stars:sample(cfg.starMax,cfg.stars)};
+    const edgeTicket=generateSmartLines(history,"Edge AI",linesPerTicket,1200,getConcentrationMode());
+    const eo=portfolioOutcome(edgeTicket,target,cfg);
 
-    for(const [bucket,pick] of [[edge,edgePick],[rnd,randPick]]){
-      const m=matchCount(pick.line,target.numbers);
-      const sm=cfg.stars?matchCount(pick.stars||[],target.stars||[]):0;
-      bucket.matches+=m;bucket.starMatches+=sm;
-      if(m>=2)bucket.two++;if(m>=3)bucket.three++;if(m>=4)bucket.four++;if(m>=5)bucket.five++;
+    edgeBestMain+=eo.bestMain;
+    edgeTotalMain+=eo.totalMain;
+    edgeStars+=eo.totalStars;
+    if(eo.bestMain>=2)edge2++;
+    if(eo.bestMain>=3)edge3++;
+    if(eo.bestMain>=4)edge4++;
+    if(eo.bestMain>=5)edge5++;
+
+    // Edge score correlation uses average line score vs actual best-main outcome.
+    edgeScores.push(mean(edgeTicket.map(x=>x.detail?.score||0)));
+    futureHits.push(eo.bestMain);
+
+    const controlTotals=[],controlBests=[];
+    let ctrlTotalMain=0,ctrlBestMain=0,ctrlStars=0;
+    let c2=0,c3=0,c4=0,c5=0;
+
+    for(let c=0;c<controls;c++){
+      const rt=randomPortfolio(cfg,linesPerTicket);
+      const ro=portfolioOutcome(rt,target,cfg);
+      controlTotals.push(ro.totalMain);
+      controlBests.push(ro.bestMain);
+      ctrlTotalMain+=ro.totalMain;
+      ctrlBestMain+=ro.bestMain;
+      ctrlStars+=ro.totalStars;
+      if(ro.bestMain>=2)c2++;
+      if(ro.bestMain>=3)c3++;
+      if(ro.bestMain>=4)c4++;
+      if(ro.bestMain>=5)c5++;
     }
 
-    if(t%5===0){
-      $("#btProgress").style.width=`${(t+1)/tests*100}%`;
+    percentileSum+=percentile(eo.totalMain,controlTotals);
+    percentileBestSum+=percentile(eo.bestMain,controlBests);
+
+    randomTotalMain+=ctrlTotalMain/controls;
+    randomBestMain+=ctrlBestMain/controls;
+    randomStars+=ctrlStars/controls;
+    random2+=c2/controls;
+    random3+=c3/controls;
+    random4+=c4/controls;
+    random5+=c5/controls;
+
+    if(t%2===0){
+      const p=$("#btProgress");
+      if(p)p.style.width=`${(t+1)/tests*100}%`;
       await new Promise(r=>setTimeout(r,0));
     }
   }
 
-  const avgE=edge.matches/tests,avgR=rnd.matches/tests;
-  const delta=avgE-avgR;
-  const relative=avgR?((avgE-avgR)/avgR*100):0;
-  let interpretation="No clear historical advantage over random in this sample.";
-  if(delta>0.08)interpretation="Edge AI produced a higher historical average in this sample.";
-  if(delta<-0.08)interpretation="Random performed better in this sample.";
+  const avgEdgeBest=edgeBestMain/tests;
+  const avgRandBest=randomBestMain/tests;
+  const avgEdgeTotal=edgeTotalMain/tests;
+  const avgRandTotal=randomTotalMain/tests;
+  const avgPercentile=percentileSum/tests;
+  const avgBestPercentile=percentileBestSum/tests;
+  const corr=correlation(edgeScores,futureHits);
 
-  $("#backtestStatus").textContent="Backtest complete.";
+  let interpretation="No clear historical advantage over the random-control distribution.";
+  if(avgBestPercentile>=60 && avgEdgeBest>avgRandBest)interpretation="Edge AI ranked above most random-control portfolios in this sample.";
+  if(avgBestPercentile<=40 && avgEdgeBest<avgRandBest)interpretation="Edge AI ranked below the random-control distribution in this sample.";
+
+  $("#backtestStatus").textContent="Robust backtest complete.";
   $("#backtestResults").innerHTML=`
     <div class="bt-grid">
-      <div class="bt-card"><b>${avgE.toFixed(3)}</b><small>Edge AI avg main matches</small></div>
-      <div class="bt-card"><b>${avgR.toFixed(3)}</b><small>Random avg main matches</small></div>
-      <div class="bt-card"><b>${relative>=0?"+":""}${relative.toFixed(1)}%</b><small>relative difference</small></div>
+      <div class="bt-card"><b>${avgEdgeBest.toFixed(3)}</b><small>Edge best-line avg main matches</small></div>
+      <div class="bt-card"><b>${avgRandBest.toFixed(3)}</b><small>Random-control best-line avg</small></div>
+      <div class="bt-card"><b>${avgBestPercentile.toFixed(1)}th</b><small>Edge best-line percentile</small></div>
+      <div class="bt-card"><b>${avgPercentile.toFixed(1)}th</b><small>Edge total-ticket percentile</small></div>
+      <div class="bt-card"><b>${avgEdgeTotal.toFixed(3)}</b><small>Edge total matches / ticket</small></div>
+      <div class="bt-card"><b>${avgRandTotal.toFixed(3)}</b><small>Random total matches / ticket</small></div>
+      <div class="bt-card"><b>${corr.toFixed(3)}</b><small>Edge score → future-hit correlation</small></div>
       <div class="bt-card"><b>${tests}</b><small>walk-forward draws tested</small></div>
     </div>
+
     <table class="bt-table">
-      <tr><th>Result</th><th>Edge AI</th><th>Random</th></tr>
-      <tr><td>2+ main matches</td><td>${edge.two}</td><td>${rnd.two}</td></tr>
-      <tr><td>3+ main matches</td><td>${edge.three}</td><td>${rnd.three}</td></tr>
-      <tr><td>4+ main matches</td><td>${edge.four}</td><td>${rnd.four}</td></tr>
-      <tr><td>5 main matches</td><td>${edge.five}</td><td>${rnd.five}</td></tr>
-      ${cfg.stars?`<tr><td>Total Lucky Star matches</td><td>${edge.starMatches}</td><td>${rnd.starMatches}</td></tr>`:""}
+      <tr><th>Best-line result</th><th>Edge AI</th><th>Random expected</th></tr>
+      <tr><td>2+ main matches</td><td>${edge2}</td><td>${random2.toFixed(1)}</td></tr>
+      <tr><td>3+ main matches</td><td>${edge3}</td><td>${random3.toFixed(1)}</td></tr>
+      <tr><td>4+ main matches</td><td>${edge4}</td><td>${random4.toFixed(1)}</td></tr>
+      <tr><td>5 main matches</td><td>${edge5}</td><td>${random5.toFixed(1)}</td></tr>
+      ${cfg.stars?`<tr><td>Total Lucky Star matches</td><td>${edgeStars}</td><td>${randomStars.toFixed(1)}</td></tr>`:""}
     </table>
+
     <div class="settings-card" style="margin-top:12px">
       <b>${interpretation}</b>
-      <p class="muted">This remains descriptive historical testing. It does not establish that future random draws are predictable.</p>
+      <p class="muted">
+        Percentiles are calculated against ${controls} random control portfolios per historical draw.
+        A 50th percentile result is roughly random-average performance.
+      </p>
+      <p class="muted">
+        Edge-score correlation tests whether higher model scores were actually associated with better subsequent outcomes.
+        Values near zero mean the model score did not meaningfully rank future hits in this sample.
+      </p>
+    </div>`;
+}
+
+async function comparePortfolioModes(){
+  const modes=["diversified","balanced","concentrated","auto"];
+  const results=[];
+  $("#backtestStatus").textContent="Comparing portfolio modes head-to-head…";
+
+  for(let i=0;i<modes.length;i++){
+    $("#backtestStatus").textContent=`Mode comparison ${i+1}/${modes.length}: ${modes[i]}…`;
+    const res=await evaluateConcentration(modes[i],40);
+    results.push({mode:modes[i],...res});
+  }
+
+  results.sort((a,b)=>b.score-a.score);
+  const best=results[0];
+
+  $("#backtestStatus").textContent=`Mode comparison complete. Best historical mode: ${best.mode}.`;
+  $("#backtestResults").innerHTML=`
+    <table class="bt-table">
+      <tr><th>Mode</th><th>Avg best-main</th><th>3+</th><th>4+</th><th>Coverage</th></tr>
+      ${results.map(r=>`
+        <tr>
+          <td>${r.mode}</td>
+          <td>${r.avg.toFixed(3)}</td>
+          <td>${r.threePlus}</td>
+          <td>${r.fourPlus}</td>
+          <td>${r.avgCoverage.toFixed(1)}</td>
+        </tr>`).join("")}
+    </table>
+    <div class="settings-card" style="margin-top:12px">
+      <b>Best historical portfolio style: ${best.mode}</b>
+      <p class="muted">Adaptive remains preferable operationally because it can still respond to current signal strength rather than using one fixed concentration policy forever.</p>
     </div>`;
 }
 async function switchGame(key){
@@ -1471,6 +1586,7 @@ $("#refreshBtn").onclick=refreshData;
 $("#runBacktest").onclick=runBacktest;
 $("#calibrateModel").onclick=calibrateWeights;
 $("#calibrateConcentration").onclick=calibrateConcentration;
+$("#comparePortfolioModes").onclick=comparePortfolioModes;
 $("#importBtn").onclick=importCsv;
 $("#clearHistory").onclick=()=>{localStorage.removeItem("lottoEdgeHistory");renderHistory()};
 

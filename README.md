@@ -202,3 +202,26 @@ according to the current signal strength.
 
 This still does not change the mathematical probability of individual valid lottery combinations.
 It changes only how the model allocates a multi-line portfolio under its own historical assumptions.
+
+
+## v17 — Robust Monte Carlo backtesting
+
+Backtesting now compares each Edge AI historical portfolio against a distribution of random
+control portfolios rather than one random ticket.
+
+New outputs include:
+- best-line average main matches
+- total-ticket average matches
+- Edge percentile against random controls
+- 2+/3+/4+/5 main-match counts
+- Lucky Star totals
+- correlation between Edge score and subsequent hit quality
+- head-to-head portfolio mode comparison
+
+Random controls can be set to 100, 250 or 500 portfolios per historical draw.
+
+This makes the backtest less sensitive to one lucky/unlucky random comparison and gives a
+much more informative baseline. A percentile near 50th means performance is roughly in line
+with the random-control distribution.
+
+The result remains historical and descriptive; it is not evidence that future draws are predictable.

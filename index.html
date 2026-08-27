@@ -7,9 +7,9 @@
   <meta name="apple-mobile-web-app-capable" content="yes"/>
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent"/>
   <meta name="apple-mobile-web-app-title" content="Lotto Edge"/>
-  <link rel="manifest" href="manifest.webmanifest?v=16"/>
+  <link rel="manifest" href="manifest.webmanifest?v=17"/>
   <link rel="apple-touch-icon" href="icon-192.png"/>
-  <link rel="stylesheet" href="app.css?v=16"/>
+  <link rel="stylesheet" href="app.css?v=17"/>
   <title>Lotto Edge</title>
 </head>
 <body>
@@ -114,9 +114,18 @@
           <option value="100" selected>100 draws</option>
           <option value="200">200 draws</option>
         </select>
-        <button id="runBacktest" class="generate mini">RUN BACKTEST</button>
+
+        <label class="label" for="controlRuns">Random control portfolios per draw</label>
+        <select id="controlRuns">
+          <option value="100">100 controls</option>
+          <option value="250" selected>250 controls</option>
+          <option value="500">500 controls</option>
+        </select>
+
+        <button id="runBacktest" class="generate mini">RUN ROBUST BACKTEST</button>
         <button id="calibrateModel" class="secondary wide">CALIBRATE EDGE AI WEIGHTS</button>
         <button id="calibrateConcentration" class="secondary wide">CALIBRATE PORTFOLIO CONCENTRATION</button>
+        <button id="comparePortfolioModes" class="secondary wide">COMPARE PORTFOLIO MODES</button>
         <div id="backtestStatus" class="status"></div>
       </div>
       <div id="backtestResults"></div>
@@ -163,6 +172,6 @@
     <button data-screen="settingsScreen"><b>⚙️</b><span>Settings</span></button>
   </nav>
 </div>
-<script src="app.js?v=16"></script>
+<script src="app.js?v=17"></script>
 </body>
 </html>
