@@ -176,3 +176,29 @@ and EuroMillions.
 
 Backtesting and calibration remain descriptive historical tools; they do not establish that
 future random lottery draws can be predicted.
+
+
+## v16 — Adaptive conviction
+
+v16 addresses the diversification-versus-concentration trade-off.
+
+Instead of treating all repeated numbers as bad, Edge AI now scores each individual number
+using long-term frequency, recent form, overdue status and pair support. Numbers are classified
+into Core, Strong, Supporting and Diversifier tiers.
+
+The portfolio optimiser may deliberately repeat Core/Strong numbers across multiple lines when
+their signal separation from the field is high. Repetition beyond the conviction allowance is
+still penalised, and near-clone lines remain heavily penalised.
+
+Portfolio behaviour modes:
+- Adaptive conviction (recommended)
+- Diversified
+- Balanced concentration
+- Strong conviction
+
+The Backtest screen can calibrate portfolio concentration historically. Adaptive mode uses the
+historically preferred concentration style as a baseline, then adjusts concentration draw-by-draw
+according to the current signal strength.
+
+This still does not change the mathematical probability of individual valid lottery combinations.
+It changes only how the model allocates a multi-line portfolio under its own historical assumptions.

@@ -1,7 +1,7 @@
 
 const $ = s => document.querySelector(s);
 
-const APP_VERSION="15.0.0";
+const APP_VERSION="16.0.0";
 
 async function checkAppVersionInBackground(){
   try{
@@ -88,6 +88,18 @@ function getModelWeights(){
 }
 function saveModelWeights(w){
   localStorage.setItem(weightStorageKey(),JSON.stringify(w));
+}
+
+function concentrationStorageKey(){
+  return `lottoEdgeConcentration:${activeGame}`;
+}
+
+function getConcentrationMode(){
+  return localStorage.getItem(concentrationStorageKey()) || "auto";
+}
+
+function saveConcentrationMode(mode){
+  localStorage.setItem(concentrationStorageKey(),mode);
 }
 
 let analysisCache={key:null,value:null};
@@ -528,6 +540,98 @@ function chooseStars(a,strategy,cfg,usedPairs){
   return (fresh||candidates[0]).stars;
 }
 
+
+function individualNumberSignals(a,cfg){
+  const rows=[];
+  for(let n=1;n<=cfg.max;n++){
+    const historical=normZ(zFromArray(a.freq,n));
+    const recent=normZ(zFromArray(a.recent,n));
+    const overdue=normZ(zFromArray(a.last,n));
+
+    // Pair support: average relationship strength with all other numbers.
+    let pairTotal=0,pairCount=0;
+    for(let m=1;m<=cfg.max;m++){
+      if(m===n)continue;
+      const k=n<m?`${n}-${m}`:`${m}-${n}`;
+      pairTotal+=a.pairs[k]||0;
+      pairCount++;
+    }
+    const pairAvg=pairCount?pairTotal/pairCount:0;
+    const pair=normZ((pairAvg-a.pairMean)/a.pairStd);
+
+    const score=
+      historical*.30+
+      recent*.30+
+      overdue*.15+
+      pair*.25;
+
+    rows.push({n,score,historical,recent,overdue,pair});
+  }
+  rows.sort((x,y)=>y.score-x.score);
+
+  // Conviction strength is not simply the top score: it measures separation
+  // between the strongest numbers and the field.
+  const all=rows.map(x=>x.score);
+  const avg=mean(all);
+  const sd=Math.sqrt(mean(all.map(x=>(x-avg)**2)))||1;
+  rows.forEach((x,i)=>{
+    x.z=(x.score-avg)/sd;
+    x.tier=x.z>=1.25?"core":x.z>=.65?"strong":x.z>=.05?"supporting":"diversifier";
+    x.rank=i+1;
+  });
+  return rows;
+}
+
+function convictionProfile(a,cfg){
+  const ranked=individualNumberSignals(a,cfg);
+  const core=ranked.filter(x=>x.tier==="core");
+  const strong=ranked.filter(x=>x.tier==="strong");
+
+  const top=ranked.slice(0,Math.max(5,cfg.picks));
+  const rest=ranked.slice(Math.max(10,cfg.picks*2));
+  const topAvg=mean(top.map(x=>x.score));
+  const restAvg=rest.length?mean(rest.map(x=>x.score)):mean(ranked.map(x=>x.score));
+  const separation=Math.max(0,topAvg-restAvg);
+
+  let strength="weak";
+  if(separation>=10 && core.length>=2)strength="strong";
+  else if(separation>=6 && (core.length>=1 || strong.length>=3))strength="moderate";
+
+  return {ranked,core,strong,separation,strength};
+}
+
+function repeatAllowance(profile,count,cfg,mode){
+  // How many lines a number may reasonably occupy.
+  if(mode==="diversified")return {core:1,strong:1,supporting:1,diversifier:1};
+  if(mode==="balanced")return {core:Math.min(3,count),strong:Math.min(2,count),supporting:1,diversifier:1};
+  if(mode==="concentrated")return {core:Math.min(4,count),strong:Math.min(3,count),supporting:2,diversifier:1};
+
+  // Auto: conviction determines concentration, with historical calibration as a baseline.
+  const calibrated=localStorage.getItem(`lottoEdgeCalibratedConcentration:${activeGame}`)||"balanced";
+
+  if(profile.strength==="strong")
+    return {core:Math.min(4,count),strong:Math.min(3,count),supporting:2,diversifier:1};
+  if(profile.strength==="moderate"){
+    if(calibrated==="concentrated")
+      return {core:Math.min(4,count),strong:Math.min(2,count),supporting:1,diversifier:1};
+    if(calibrated==="diversified")
+      return {core:Math.min(2,count),strong:Math.min(2,count),supporting:1,diversifier:1};
+    return {core:Math.min(3,count),strong:Math.min(2,count),supporting:1,diversifier:1};
+  }
+
+  if(calibrated==="concentrated")
+    return {core:Math.min(3,count),strong:Math.min(2,count),supporting:1,diversifier:1};
+  if(calibrated==="diversified")
+    return {core:1,strong:1,supporting:1,diversifier:1};
+  return {core:Math.min(2,count),strong:1,supporting:1,diversifier:1};
+}
+
+function numberTierMap(profile){
+  const m=new Map();
+  profile.ranked.forEach(x=>m.set(x.n,x));
+  return m;
+}
+
 function portfolioMetrics(lines,cfg){
   const numberCounts=new Map();
   const pairCounts=new Map();
@@ -570,31 +674,89 @@ function portfolioMetrics(lines,cfg){
   };
 }
 
-function ticketObjective(lines,cfg){
+function ticketObjective(lines,cfg,profile,mode){
   const pm=portfolioMetrics(lines,cfg);
   const avgEdge=mean(lines.map(x=>x.detail?.score||50));
   const minEdge=Math.min(...lines.map(x=>x.detail?.score||50));
-  const maxOverlap=(()=>{
-    let m=0;
-    for(let i=0;i<lines.length;i++)for(let j=i+1;j<lines.length;j++){
-      m=Math.max(m,lines[i].line.filter(n=>lines[j].line.includes(n)).length);
+  const tierMap=numberTierMap(profile);
+  const allowances=repeatAllowance(profile,lines.length,cfg,mode);
+
+  const counts=new Map();
+  lines.forEach(x=>x.line.forEach(n=>counts.set(n,(counts.get(n)||0)+1)));
+
+  let justifiedRepeatReward=0;
+  let unjustifiedRepeatPenalty=0;
+
+  for(const [n,c] of counts){
+    if(c<=1)continue;
+    const sig=tierMap.get(n);
+    const tier=sig?.tier||"diversifier";
+    const allowed=allowances[tier]||1;
+
+    // Repeating a high-conviction number is rewarded up to its allowance.
+    const justified=Math.min(c,allowed)-1;
+    if(justified>0){
+      const strength=Math.max(0,(sig?.score||50)-50);
+      justifiedRepeatReward += justified*(1.5+strength*.08);
     }
-    return m;
-  })();
 
-  // Whole-ticket score: line quality + coverage, with concentration penalties.
+    // Repeats beyond conviction allowance become expensive.
+    const excess=Math.max(0,c-allowed);
+    unjustifiedRepeatPenalty += excess*7;
+  }
+
+  let maxOverlap=0;
+  for(let i=0;i<lines.length;i++)for(let j=i+1;j<lines.length;j++){
+    maxOverlap=Math.max(maxOverlap,lines[i].line.filter(n=>lines[j].line.includes(n)).length);
+  }
+
+  // Adaptive blend: strong conviction shifts weight from raw coverage toward
+  // repeated high-quality signal exploitation.
+  let qualityWeight=.54,coverageWeight=.38;
+  if(mode==="concentrated" || (mode==="auto"&&profile.strength==="strong")){
+    qualityWeight=.61;coverageWeight=.27;
+  }else if(mode==="balanced" || (mode==="auto"&&profile.strength==="moderate")){
+    qualityWeight=.58;coverageWeight=.32;
+  }else if(mode==="diversified" || (mode==="auto"&&profile.strength==="weak")){
+    qualityWeight=.51;coverageWeight=.41;
+  }
+
   let total=
-    avgEdge*.54 +
-    pm.score*.38 +
-    minEdge*.08;
+    avgEdge*qualityWeight+
+    pm.score*coverageWeight+
+    minEdge*.08+
+    justifiedRepeatReward-
+    unjustifiedRepeatPenalty;
 
-  if(maxOverlap>=cfg.picks-1)total-=20;
-  else if(maxOverlap===cfg.picks-2)total-=7;
+  if(maxOverlap>=cfg.picks-1)total-=22;
+  else if(maxOverlap===cfg.picks-2)total-=8;
 
-  total-=pm.repeatedPairs*1.4;
+  // Pair repetition remains expensive, but less so when the repeated pair is made
+  // entirely of high-conviction numbers.
+  const pairCounts=new Map();
+  lines.forEach(x=>{
+    for(let i=0;i<x.line.length;i++)for(let j=i+1;j<x.line.length;j++){
+      const k=`${x.line[i]}-${x.line[j]}`;
+      pairCounts.set(k,(pairCounts.get(k)||0)+1);
+    }
+  });
+  for(const [k,c] of pairCounts){
+    if(c<=1)continue;
+    const [a,b]=k.split("-").map(Number);
+    const sa=tierMap.get(a),sb=tierMap.get(b);
+    const high=(["core","strong"].includes(sa?.tier)&&["core","strong"].includes(sb?.tier));
+    total-=(c-1)*(high?1.2:4.5);
+  }
+
   total-=pm.repeatedStarPairs*1.5;
 
-  return {total,avgEdge,maxOverlap,...pm};
+  return {
+    total,avgEdge,maxOverlap,
+    justifiedRepeatReward,unjustifiedRepeatPenalty,
+    convictionStrength:profile.strength,
+    separation:profile.separation,
+    ...pm
+  };
 }
 
 function cloneTicket(ticket){
@@ -610,7 +772,7 @@ function randomTicketFromPool(pool,count,cfg,a,strategy){
   const picked=[],used=new Set(),usedStars=new Set();
   let attempts=0;
   while(picked.length<count && attempts++<500){
-    const item=pool[Math.floor(Math.random()*Math.min(pool.length,1200))];
+    const item=pool[Math.floor(Math.random()*Math.min(pool.length,1400))];
     if(!item)break;
     const key=item.line.join(",");
     if(used.has(key))continue;
@@ -627,19 +789,24 @@ function mutateTicket(ticket,pool,cfg,a,strategy){
   if(!out.length)return out;
   const idx=Math.floor(Math.random()*out.length);
   const used=new Set(out.filter((_,i)=>i!==idx).map(x=>x.line.join(",")));
-  for(let tries=0;tries<80;tries++){
-    const cand=pool[Math.floor(Math.random()*Math.min(pool.length,1500))];
+  for(let tries=0;tries<100;tries++){
+    const cand=pool[Math.floor(Math.random()*Math.min(pool.length,1700))];
     if(!cand)continue;
     const key=cand.line.join(",");
     if(used.has(key))continue;
-    out[idx]={...cand,line:[...cand.line],stars:chooseStars(a,strategy,cfg,new Set(out.filter((_,i)=>i!==idx).map(x=>(x.stars||[]).join("-"))))};
+    out[idx]={
+      ...cand,
+      line:[...cand.line],
+      stars:chooseStars(a,strategy,cfg,new Set(out.filter((_,i)=>i!==idx).map(x=>(x.stars||[]).join("-"))))
+    };
     break;
   }
   return out;
 }
 
-function generateSmartLines(history,strategy,count,candidateCount=30000){
+function generateSmartLines(history,strategy,count,candidateCount=30000,modeOverride=null){
   const cfg=GAMES[activeGame],a=buildAnalysis(history);
+  const mode=modeOverride||getConcentrationMode();
 
   if(strategy==="Pure random"||!history.length){
     const randomLines=Array.from({length:count},()=>({
@@ -648,65 +815,84 @@ function generateSmartLines(history,strategy,count,candidateCount=30000){
       detail:null
     }));
     randomLines.portfolio=portfolioMetrics(randomLines,cfg);
-    randomLines.globalScore=ticketObjective(randomLines,cfg);
+    randomLines.globalScore={total:randomLines.portfolio.score,convictionStrength:"none",separation:0};
+    randomLines.conviction=null;
     return randomLines;
   }
 
+  const profile=convictionProfile(a,cfg);
   const pool=[],seen=new Set();
+
   for(let i=0;i<candidateCount;i++){
     const line=sample(cfg.max,cfg.picks),k=line.join(",");
     if(seen.has(k))continue;
     seen.add(k);
     pool.push({line,detail:genericScore(line,strategy,a,cfg),stars:[]});
   }
-  pool.sort((x,y)=>y.detail.score-x.detail.score);
-  const shortlist=pool.slice(0,Math.min(2200,pool.length));
 
-  // Seed several complete tickets, then globally improve them.
+  pool.sort((x,y)=>y.detail.score-x.detail.score);
+  const shortlist=pool.slice(0,Math.min(2600,pool.length));
+
   const population=[];
-  const seeds=Math.max(24,Math.min(60,count*10));
+  const seeds=Math.max(28,Math.min(70,count*12));
   for(let i=0;i<seeds;i++){
     const t=randomTicketFromPool(shortlist,count,cfg,a,strategy);
     if(t.length===count)population.push(t);
   }
 
-  // Deterministic high-quality seed.
-  const deterministic=[];
-  const usedStarPairs=new Set();
-  for(const item of shortlist){
-    if(deterministic.length===count)break;
-    const overlapOk=deterministic.every(x=>item.line.filter(n=>x.line.includes(n)).length<=cfg.picks-2);
-    if(!overlapOk)continue;
-    deterministic.push({...item,line:[...item.line],stars:chooseStars(a,strategy,cfg,usedStarPairs)});
-    if(deterministic.at(-1).stars.length)usedStarPairs.add(deterministic.at(-1).stars.join("-"));
+  // A conviction-seeded ticket deliberately encourages core numbers to recur
+  // when profile strength is high.
+  const seeded=[];
+  const usedStars=new Set();
+  const tierMap=numberTierMap(profile);
+  const allowances=repeatAllowance(profile,count,cfg,mode);
+  const counts=new Map();
+
+  for(const cand of shortlist){
+    if(seeded.length===count)break;
+    let okay=true;
+    for(const n of cand.line){
+      const tier=tierMap.get(n)?.tier||"diversifier";
+      if((counts.get(n)||0)>=(allowances[tier]||1)){okay=false;break;}
+    }
+    if(!okay)continue;
+
+    seeded.push({...cand,line:[...cand.line],stars:chooseStars(a,strategy,cfg,usedStars)});
+    seeded.at(-1).line.forEach(n=>counts.set(n,(counts.get(n)||0)+1));
+    if(seeded.at(-1).stars.length)usedStars.add(seeded.at(-1).stars.join("-"));
   }
-  if(deterministic.length===count)population.push(deterministic);
+  if(seeded.length===count)population.push(seeded);
 
-  let best=population[0]||deterministic;
-  let bestScore=ticketObjective(best,cfg).total;
+  let best=population[0]||seeded;
+  let bestObj=ticketObjective(best,cfg,profile,mode);
 
-  // Simulated evolutionary hill-climb across complete tickets.
-  const iterations=count<=5?900:500;
+  const iterations=count<=5?1100:650;
   for(let i=0;i<iterations;i++){
     const base=population.length
       ? population[Math.floor(Math.random()*population.length)]
       : best;
     const cand=mutateTicket(base,shortlist,cfg,a,strategy);
     if(cand.length!==count)continue;
-    const obj=ticketObjective(cand,cfg);
-    if(obj.total>bestScore){
+    const obj=ticketObjective(cand,cfg,profile,mode);
+
+    if(obj.total>bestObj.total){
       best=cand;
-      bestScore=obj.total;
+      bestObj=obj;
     }
-    if(i%20===0 && population.length){
-      population.sort((x,y)=>ticketObjective(y,cfg).total-ticketObjective(x,cfg).total);
-      population.splice(Math.ceil(population.length*.7));
+
+    if(i%22===0 && population.length){
+      population.sort((x,y)=>
+        ticketObjective(y,cfg,profile,mode).total-ticketObjective(x,cfg,profile,mode).total
+      );
+      population.splice(Math.ceil(population.length*.68));
       population.push(cloneTicket(best));
     }
   }
 
   best.portfolio=portfolioMetrics(best,cfg);
-  best.globalScore=ticketObjective(best,cfg);
+  best.globalScore=bestObj;
+  best.conviction=profile;
+  best.concentrationMode=mode;
   return best;
 }
 function confidenceFor(items){
@@ -819,6 +1005,15 @@ function renderPicks(items){
           <div><b>${p.repeatedPairs}</b><small>repeated pairs</small></div>
           ${GAMES[activeGame].stars?`<div><b>${p.repeatedStarPairs}</b><small>repeated star pairs</small></div>`:""}
         </div>
+        ${items.conviction?`
+          <div class="conviction-summary">
+            <b>Adaptive conviction: ${items.conviction.strength}</b>
+            <span>Signal separation ${items.conviction.separation.toFixed(1)} points · mode ${items.concentrationMode}</span>
+            <small>
+              Core: ${items.conviction.core.slice(0,6).map(x=>x.n).join(", ")||"none"} ·
+              Strong: ${items.conviction.strong.slice(0,8).map(x=>x.n).join(", ")||"none"}
+            </small>
+          </div>`:""}
       </div>`;
   }else{
     $("#confidenceCard").classList.add("hidden");
@@ -977,10 +1172,10 @@ function renderHistory(){
 
 function matchCount(a,b){return a.filter(n=>b.includes(n)).length}
 
-function quickModelLine(history,weightsOverride=null){
+function quickModelLine(history,weightsOverride=null,modeOverride=null){
   const saved=getModelWeights();
   if(weightsOverride)saveModelWeights(weightsOverride);
-  const result=generateSmartLines(history,"Edge AI",1,900)[0];
+  const result=generateSmartLines(history,"Edge AI",1,900,modeOverride)[0];
   if(weightsOverride)saveModelWeights(saved);
   return result;
 }
@@ -1041,6 +1236,83 @@ async function calibrateWeights(){
   $("#backtestStatus").textContent=
     `Calibration complete. Best historical average ${best.res.avg.toFixed(3)} main matches over ${best.res.tests} draws. New weights saved for ${GAMES[activeGame].name}.`;
   button.disabled=false;
+}
+
+
+async function evaluateConcentration(mode,testCount=50){
+  const cfg=GAMES[activeGame];
+  const tests=Math.min(testCount,draws.length-80);
+  if(tests<=0)return {score:-Infinity};
+
+  let mainMatches=0,threePlus=0,fourPlus=0,stars=0,coverage=0;
+
+  for(let t=0;t<tests;t++){
+    const target=draws[t];
+    const history=draws.slice(t+1);
+
+    // Three-line historical portfolio keeps calibration mobile-friendly while still
+    // measuring concentration vs diversification behaviour.
+    const ticket=generateSmartLines(history,"Edge AI",3,1400,mode);
+
+    let bestMain=0,bestStars=0;
+    for(const pick of ticket){
+      const m=matchCount(pick.line,target.numbers);
+      bestMain=Math.max(bestMain,m);
+      if(cfg.stars)bestStars=Math.max(bestStars,matchCount(pick.stars||[],target.stars||[]));
+    }
+
+    mainMatches+=bestMain;
+    if(bestMain>=3)threePlus++;
+    if(bestMain>=4)fourPlus++;
+    stars+=bestStars;
+    coverage+=(ticket.portfolio?.score||0);
+
+    if(t%5===0)await new Promise(r=>setTimeout(r,0));
+  }
+
+  const avg=mainMatches/tests;
+  const avgCoverage=coverage/tests;
+
+  // Reward actual historical hit behaviour first; coverage is only a small tiebreaker.
+  const score=
+    avg+
+    threePlus*.025+
+    fourPlus*.18+
+    stars*.004+
+    avgCoverage*.0004;
+
+  return {score,avg,threePlus,fourPlus,stars,avgCoverage,tests};
+}
+
+async function calibrateConcentration(){
+  if(draws.length<120){
+    $("#backtestStatus").textContent="Not enough history to calibrate portfolio concentration.";
+    return;
+  }
+
+  const button=$("#calibrateConcentration");
+  button.disabled=true;
+  const modes=["diversified","balanced","concentrated"];
+  let best=null;
+
+  for(let i=0;i<modes.length;i++){
+    $("#backtestStatus").textContent=`Testing portfolio style ${i+1}/${modes.length}: ${modes[i]}…`;
+    const res=await evaluateConcentration(modes[i],45);
+    if(!best||res.score>best.res.score)best={mode:modes[i],res};
+  }
+
+  // Auto uses the calibrated preference as a bias while still adapting draw-by-draw.
+  localStorage.setItem(`lottoEdgeCalibratedConcentration:${activeGame}`,best.mode);
+  saveConcentrationMode("auto");
+  $("#concentrationMode").value="auto";
+
+  $("#backtestStatus").textContent=
+    `Portfolio calibration complete. Historical preference: ${best.mode}. `+
+    `Best-draw average ${best.res.avg.toFixed(3)} main matches over ${best.res.tests} tests. `+
+    `Adaptive mode remains enabled and will use this as its baseline.`;
+
+  button.disabled=false;
+  renderConcentrationInfo();
 }
 
 async function runBacktest(){
@@ -1123,6 +1395,8 @@ async function switchGame(key){
   renderStats(activeStat);
   $("#importStatus").textContent=`${GAMES[key].name}: ${draws.length} draws stored locally.`;
   renderWeightStatus();
+  $("#concentrationMode").value=getConcentrationMode();
+  renderConcentrationInfo();
   renderIntegrity();
 
   const mainStatus=$("#dataStatusMain");
@@ -1160,8 +1434,34 @@ async function importCsv(){
   $("#importStatus").textContent=`Imported ${inc.length} rows; ${draws.length} total stored.`;
 }
 
+
+const concentrationDescriptions={
+  auto:"Lets signal strength decide how much repetition is justified. Historical calibration is used as a baseline.",
+  diversified:"Maximises independent coverage. Strong numbers are generally used once.",
+  balanced:"Allows core numbers to repeat across several lines while keeping broad coverage.",
+  concentrated:"Leans into the highest-conviction numbers and pairs across multiple lines."
+};
+
+function renderConcentrationInfo(){
+  const mode=$("#concentrationMode")?.value||getConcentrationMode();
+  const calibrated=localStorage.getItem(`lottoEdgeCalibratedConcentration:${activeGame}`)||"not calibrated";
+  const info=$("#concentrationInfo");
+  if(info)info.textContent=concentrationDescriptions[mode]+
+    (mode==="auto"?` Historical baseline: ${calibrated}.`:"");
+
+  const status=$("#concentrationStatus");
+  if(status)status.textContent=
+    `Portfolio mode: ${getConcentrationMode()}. Historical concentration baseline: ${calibrated}.`;
+}
+
 $("#strategyInfo").textContent=descriptions[$("#strategy").value];
 $("#strategy").onchange=e=>$("#strategyInfo").textContent=descriptions[e.target.value];
+$("#concentrationMode").value=getConcentrationMode();
+$("#concentrationMode").onchange=e=>{
+  saveConcentrationMode(e.target.value);
+  renderConcentrationInfo();
+};
+renderConcentrationInfo();
 $("#minusLine").onclick=()=>{$("#lineCount").textContent=lineCount=Math.max(1,lineCount-1)};
 $("#plusLine").onclick=()=>{$("#lineCount").textContent=lineCount=Math.min(10,lineCount+1)};
 $("#generateBtn").onclick=generate;
@@ -1170,6 +1470,7 @@ $("#euroGame").onclick=()=>switchGame("euromillions");
 $("#refreshBtn").onclick=refreshData;
 $("#runBacktest").onclick=runBacktest;
 $("#calibrateModel").onclick=calibrateWeights;
+$("#calibrateConcentration").onclick=calibrateConcentration;
 $("#importBtn").onclick=importCsv;
 $("#clearHistory").onclick=()=>{localStorage.removeItem("lottoEdgeHistory");renderHistory()};
 
@@ -1181,7 +1482,7 @@ $$(".bottom-nav button").forEach(b=>b.onclick=()=>{
   $$(".bottom-nav button").forEach(x=>x.classList.remove("active"));b.classList.add("active");
   $$(".screen").forEach(x=>x.classList.remove("active"));$("#"+b.dataset.screen).classList.add("active");
   if(b.dataset.screen==="historyScreen")renderHistory();
-  if(b.dataset.screen==="settingsScreen"){renderIntegrity();renderWeightStatus();}
+  if(b.dataset.screen==="settingsScreen"){renderIntegrity();renderWeightStatus();renderConcentrationInfo();}
 });
 
 if("serviceWorker" in navigator){
