@@ -362,3 +362,58 @@ If a validated champion already exists, a challenger must also beat that champio
 above zero on the same genuinely fresh arena before replacement.
 
 The Player Model remains explicitly heuristic/unvalidated. Low-sharing stays outside the Draw Model.
+
+
+## v22 — Player Edge
+
+v22 freezes the Draw Model work and moves the project to the mechanism with a defensible economic basis:
+other players do not select lottery combinations uniformly, so an unpopular winning combination can be
+less likely to share a prize.
+
+### Production architecture
+
+1. **Draw Model**
+   Unchanged from v21.2. It remains neutral unless its private production arena validates a predictive
+   challenger. Player Edge does not alter draw probability.
+
+2. **Player Model**
+   A separate popularity model. Its default state is a literature-backed prior based on published UK
+   lottery evidence that lower/birthday-range numbers are selected disproportionately, 7 is unusually
+   popular, 13 unusually unpopular, and consciously selected combinations cluster.
+
+3. **Portfolio Optimiser**
+   Uses Player Edge as a payout-sharing objective while controlling line overlap and coverage.
+
+### Empirical Player evidence
+
+The app can refresh recent public prize-breakdown data from UK Lottery Stats for Lotto and EuroMillions.
+It stores rows locally and accumulates unique evidence over time.
+
+The empirical target is a winner-pressure proxy built primarily from prize-tier ratios such as
+Match 3 winners / Match 2 winners. Ratios are used to reduce sensitivity to changing ticket sales.
+This remains an indirect proxy for player choice; it is not direct ticket-level selection data.
+
+### Player Model validation
+
+- The first validation requires a chronological training period and a later holdout.
+- A full production validation requires at least 80 cached evidence rows and at least 24 usable holdout rows.
+- The test statistic is holdout correlation between predicted popularity pressure and later observed
+  winner-count pressure.
+- Significance is assessed with a deterministic one-sided permutation test.
+- Production empirical Player Edge requires holdout correlation >= 0.18 and permutation p <= 0.05.
+- After any Player validation attempt, a new attempt is locked until at least 30 genuinely newer
+  evidence rows have accumulated after the previous cutoff.
+- A failed challenger never deletes an already validated Player Model.
+
+### Literature basis
+
+- Cox, Daniell & Nicole (1998), *Using Maximum Entropy to Double One's Expected Winnings in the UK National Lottery*.
+  https://eprints.soton.ac.uk/250895/
+- Haigh, *The Statistics of the National Lottery*.
+  https://academic.oup.com/jrsssa/article-abstract/160/2/187/7102439
+- Baker & McHale / Significance overview of number preferences.
+  https://academic.oup.com/jrssig/article/20/1/31/7034183
+
+The literature supports the existence of non-uniform human choice. Lotto Edge's own current-player
+calibration remains explicitly separate and must pass its own later-data validation before empirical
+coefficients replace the literature prior.

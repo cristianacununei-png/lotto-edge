@@ -7,9 +7,9 @@
   <meta name="apple-mobile-web-app-capable" content="yes"/>
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent"/>
   <meta name="apple-mobile-web-app-title" content="Lotto Edge"/>
-  <link rel="manifest" href="manifest.webmanifest?v=21.2"/>
+  <link rel="manifest" href="manifest.webmanifest?v=22"/>
   <link rel="apple-touch-icon" href="icon-192.png"/>
-  <link rel="stylesheet" href="app.css?v=21.2"/>
+  <link rel="stylesheet" href="app.css?v=22"/>
   <title>Lotto Edge</title>
 </head>
 <body>
@@ -17,7 +17,7 @@
   <header class="topbar">
     <div>
       <div class="eyebrow" id="gameLabel">UK LOTTO · 6 / 59</div>
-      <div class="title-row"><h1>Lotto Edge</h1><span class="version-badge" id="versionBadge">v21.2</span></div>
+      <div class="title-row"><h1>Lotto Edge</h1><span class="version-badge" id="versionBadge">v22</span></div>
     </div>
   </header>
 
@@ -77,13 +77,12 @@
 
       <div id="confidenceCard" class="confidence-card hidden"></div>
       <div id="modelLegend" class="model-legend">
-        Validated Edge uses historical prediction only if it survives out-of-sample validation. Coverage and low-sharing optimise the portfolio, not draw probability.
+        Validated Edge keeps draw prediction off unless it validates. Player Edge separately estimates human number-choice popularity to reduce potential prize sharing; it never changes draw probability.
       </div>
       <section id="results"></section>
 
       <p class="legal">
-        Edge AI ranks historical patterns; it does not change the mathematical probability
-        of a valid combination in a fair lottery.
+        Every valid combination has the same draw probability in a fair lottery. Player Edge only targets potential co-winner / prize-sharing risk.
       </p>
     </section>
 
@@ -93,6 +92,14 @@
         <button id="refreshBtn" class="secondary">Refresh data</button>
       </div>
       <div id="updateStatus" class="status"></div>
+
+      <div id="playerModelPanel" class="player-model-card"></div>
+      <div class="player-actions">
+        <button id="refreshPlayerEvidence" class="secondary">Refresh Player evidence</button>
+        <button id="runPlayerValidation" class="secondary">Run Player validation</button>
+      </div>
+      <div id="playerEvidenceStatus" class="status"></div>
+      <div id="playerModelResults"></div>
 
       <div class="segmented four">
         <button data-stat="hot" class="active">Hot</button>
@@ -178,8 +185,35 @@
       <div class="settings-card">
         <h3>Model architecture</h3>
         <p class="muted"><b>Draw Model</b> — historical signals. It may influence production only after surviving reserved out-of-sample validation.</p>
-        <p class="muted"><b>Player Model</b> — low-sharing heuristic. It estimates whether a combination may be less commonly chosen by other players. It does not change draw probability and is not yet empirically validated.</p>
+        <p class="muted"><b>Player Model</b> — estimates human number-selection popularity. It can affect potential prize sharing, never draw probability.</p>
         <p class="muted"><b>Portfolio Optimiser</b> — controls overlap, coverage and concentration across multiple lines.</p>
+      </div>
+
+      <div class="settings-card">
+        <h3>Player Model</h3>
+        <p id="playerModelStatus" class="muted"></p>
+        <p class="muted">
+          The default prior uses published UK lottery findings: lower/birthday-range numbers are selected disproportionately,
+          7 is unusually popular, 13 unusually unpopular, and consciously selected combinations cluster rather than behaving like uniform random picks.
+        </p>
+        <p class="muted source-links">
+          Research:
+          <a href="https://eprints.soton.ac.uk/250895/" target="_blank" rel="noopener">Cox et al.</a> ·
+          <a href="https://academic.oup.com/jrsssa/article-abstract/160/2/187/7102439" target="_blank" rel="noopener">Haigh</a> ·
+          <a href="https://academic.oup.com/jrssig/article/20/1/31/7034183" target="_blank" rel="noopener">Significance</a>
+        </p>
+      </div>
+
+      <div class="settings-card">
+        <h3>Import Player evidence</h3>
+        <p class="muted">
+          Optional CSV evidence can extend the cached prize-breakdown dataset. Required columns:
+          date, ball1…ball6 (or ball1…ball5 + stars), Match 2 winners and Match 3 winners.
+          Match 4 / Match 5 winners are optional.
+        </p>
+        <input type="file" id="playerCsvInput" accept=".csv,text/csv"/>
+        <button id="playerImportBtn" class="secondary wide">Import Player evidence CSV</button>
+        <div id="playerImportStatus" class="status"></div>
       </div>
       <div class="settings-card">
         <h3>Research model</h3>
@@ -201,6 +235,6 @@
     <button data-screen="settingsScreen"><b>⚙️</b><span>Settings</span></button>
   </nav>
 </div>
-<script src="app.js?v=21.2"></script>
+<script src="app.js?v=22"></script>
 </body>
 </html>

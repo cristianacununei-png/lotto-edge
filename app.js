@@ -1,7 +1,7 @@
 
 const $ = s => document.querySelector(s);
 
-const APP_VERSION="21.2.0";
+const APP_VERSION="22.0.0";
 
 async function checkAppVersionInBackground(){
   try{
@@ -37,6 +37,18 @@ const LOTTO_CURRENT_ARCHIVES = [
   "https://www.national-lottery.com/lotto/results/2026-archive"
 ];
 
+const PLAYER_EVIDENCE_URLS={
+  lotto:"https://www.lotterystats.co.uk/lotto/results",
+  euromillions:"https://www.lotterystats.co.uk/euromillions/results"
+};
+
+const PLAYER_MODEL_SOURCES={
+  cox:"https://eprints.soton.ac.uk/250895/",
+  haigh:"https://academic.oup.com/jrsssa/article-abstract/160/2/187/7102439",
+  conscious:"https://academic.oup.com/jrsssa/article/174/1/31/7100902",
+  significance:"https://academic.oup.com/jrssig/article/20/1/31/7034183"
+};
+
 function corsProxy(url){
   return "https://api.allorigins.win/raw?url="+encodeURIComponent(url);
 }
@@ -59,7 +71,7 @@ const descriptions = {
   "Edge AI Research":"Experimental historical model for research and comparison. It is not treated as validated prediction.",
   "Edge AI":"Experimental historical model + smart ticket diversification. Analytical ranking only.",
   "Balanced":"Typical historical structure plus lower-sharing-risk patterns.",
-  "Low sharing risk":"Avoids birthday-heavy and obvious human number patterns.",
+  "Low sharing risk":"Player Edge: favours combinations estimated to be less commonly selected by other players. This affects potential prize sharing, not draw probability.",
   "Hot numbers":"Favours historically frequent numbers.",
   "Overdue numbers":"Favours numbers absent for longer.",
   "Pure random":"No historical weighting."
@@ -572,10 +584,212 @@ function lineFeatures(line,cfg){
   };
 }
 
+
+const PLAYER_FEATURE_KEYS=[
+  "birthdayShare",
+  "lowNumberBias",
+  "lucky7",
+  "unlucky13",
+  "consecutive",
+  "sameLast",
+  "arithmeticPattern",
+  "allBirthday"
+];
+
+const PLAYER_PRIOR_WEIGHTS={
+  birthdayShare:1.45,
+  lowNumberBias:.85,
+  lucky7:.55,
+  unlucky13:-.28,
+  consecutive:.65,
+  sameLast:.28,
+  arithmeticPattern:.42,
+  allBirthday:.70
+};
+
+const PLAYER_MIN_FIRST_VALIDATION=80;
+const PLAYER_MIN_FRESH_VALIDATION=30;
+
+function playerEvidenceStorageKey(){
+  return `lottoEdgePlayerEvidence:${activeGame}`;
+}
+
+function playerModelStorageKey(){
+  return `lottoEdgePlayerModel:${activeGame}`;
+}
+
+function playerValidationLedgerKey(){
+  return `lottoEdgePlayerValidationLedger:${activeGame}`;
+}
+
+function getPlayerEvidence(gameKey=activeGame){
+  try{
+    const x=JSON.parse(localStorage.getItem(`lottoEdgePlayerEvidence:${gameKey}`)||"[]");
+    return Array.isArray(x)?x:[];
+  }catch{return[]}
+}
+
+function savePlayerEvidence(rows,gameKey=activeGame){
+  const seen=new Set(),out=[];
+  [...rows].sort((a,b)=>normaliseDateValue(a.date).localeCompare(normaliseDateValue(b.date))).forEach(r=>{
+    const k=`${normaliseDateValue(r.date)}|${(r.numbers||[]).join(",")}|${(r.stars||[]).join(",")}`;
+    if(!k||seen.has(k))return;
+    seen.add(k);out.push(r);
+  });
+  localStorage.setItem(`lottoEdgePlayerEvidence:${gameKey}`,JSON.stringify(out));
+  return out;
+}
+
+function getPlayerModel(gameKey=activeGame){
+  try{
+    const m=JSON.parse(localStorage.getItem(`lottoEdgePlayerModel:${gameKey}`)||"null");
+    if(m && m.schema===1)return m;
+  }catch{}
+  return {
+    schema:1,
+    status:"prior",
+    coefficients:null,
+    featureMean:null,
+    featureSd:null,
+    predictionMean:0,
+    predictionSd:1,
+    validatedAt:null,
+    cutoffDate:null,
+    evidenceCount:0,
+    holdoutCorrelation:null,
+    holdoutP:null
+  };
+}
+
+function savePlayerModel(model,gameKey=activeGame){
+  localStorage.setItem(`lottoEdgePlayerModel:${gameKey}`,JSON.stringify(model));
+}
+
+function getPlayerValidationLedger(gameKey=activeGame){
+  try{
+    const x=JSON.parse(localStorage.getItem(`lottoEdgePlayerValidationLedger:${gameKey}`)||"null");
+    if(x && Array.isArray(x.runs))return x;
+  }catch{}
+  return {schema:1,runs:[]};
+}
+
+function savePlayerValidationLedger(ledger,gameKey=activeGame){
+  ledger.schema=1;
+  localStorage.setItem(`lottoEdgePlayerValidationLedger:${gameKey}`,JSON.stringify(ledger));
+}
+
+function lastPlayerValidationRun(gameKey=activeGame){
+  return getPlayerValidationLedger(gameKey).runs[0]||null;
+}
+
+function recordPlayerValidationRun(run,gameKey=activeGame){
+  const ledger=getPlayerValidationLedger(gameKey);
+  ledger.runs.unshift(run);
+  ledger.runs=ledger.runs.slice(0,20);
+  savePlayerValidationLedger(ledger,gameKey);
+}
+
+function arithmeticPatternScore(line){
+  if(line.length<3)return 0;
+  const a=[...line].sort((x,y)=>x-y);
+  let hits=0,total=0;
+  for(let i=0;i<a.length;i++){
+    for(let j=i+1;j<a.length;j++){
+      for(let k=j+1;k<a.length;k++){
+        total++;
+        if(a[j]-a[i]===a[k]-a[j])hits++;
+      }
+    }
+  }
+  return total?Math.min(1,hits/2):0;
+}
+
+function playerFeatureVector(line,cfg){
+  const nums=[...line].sort((a,b)=>a-b);
+  const f=lineFeatures(nums,cfg);
+  const meanN=nums.length?mean(nums):(cfg.max+1)/2;
+
+  return {
+    birthdayShare:nums.length?f.birthday/nums.length:0,
+    lowNumberBias:nums.length?1-(meanN-1)/(cfg.max-1):.5,
+    lucky7:nums.includes(7)?1:0,
+    unlucky13:nums.includes(13)?1:0,
+    consecutive:Math.min(1,f.consecutive/2),
+    sameLast:Math.min(1,f.sameLast/3),
+    arithmeticPattern:arithmeticPatternScore(nums),
+    allBirthday:nums.length && nums.every(n=>n<=31)?1:0
+  };
+}
+
+function playerStarPrior(stars,cfg){
+  if(!cfg.stars||!stars?.length)return 0;
+  const s=[...stars].sort((a,b)=>a-b);
+  let raw=0;
+  if(s.includes(7))raw+=.45;
+  if(s.includes(13))raw-=.20;
+  if(s.length===2 && s[1]===s[0]+1)raw+=.30;
+  if(s.every(n=>n<=7))raw+=.20;
+  return raw;
+}
+
+function priorPlayerPopularityRaw(line,stars,cfg){
+  const x=playerFeatureVector(line,cfg);
+  let raw=0;
+  for(const k of PLAYER_FEATURE_KEYS)raw+=(PLAYER_PRIOR_WEIGHTS[k]||0)*x[k];
+  raw+=playerStarPrior(stars,cfg);
+  return raw;
+}
+
+function priorPlayerLowSharing(line,stars,cfg){
+  const raw=priorPlayerPopularityRaw(line,stars,cfg);
+  // Fixed mapping: literature-backed ranking, not a probability estimate.
+  return Math.max(0,Math.min(100,82-22*raw));
+}
+
+function learnedPlayerPrediction(line,cfg,model){
+  if(!model?.coefficients)return null;
+  const x=playerFeatureVector(line,cfg);
+  let pred=model.coefficients[0]||0;
+  for(let j=0;j<PLAYER_FEATURE_KEYS.length;j++){
+    const k=PLAYER_FEATURE_KEYS[j];
+    const sd=model.featureSd?.[j]||1;
+    const z=(x[k]-(model.featureMean?.[j]||0))/sd;
+    pred+=(model.coefficients[j+1]||0)*z;
+  }
+  return pred;
+}
+
+function playerScoreDetails(line,stars=[],cfg=GAMES[activeGame]){
+  const prior=priorPlayerLowSharing(line,stars,cfg);
+  const model=getPlayerModel();
+  const learned=learnedPlayerPrediction(line,cfg,model);
+
+  let lowSharing=prior;
+  let mode="literature prior";
+
+  if(model.status==="validated" && Number.isFinite(learned)){
+    const z=(learned-(model.predictionMean||0))/(model.predictionSd||1);
+    const empirical=Math.max(0,Math.min(100,50-18*z));
+
+    // Main-number empirical model plus a modest prior stabiliser.
+    lowSharing=.82*empirical+.18*prior;
+    mode="validated empirical";
+  }
+
+  const features=playerFeatureVector(line,cfg);
+  return {
+    lowSharing:Math.max(0,Math.min(100,lowSharing)),
+    popularity:100-Math.max(0,Math.min(100,lowSharing)),
+    prior,
+    mode,
+    status:model.status,
+    features,
+    model
+  };
+}
+
 function sharingScore(line,cfg){
-  const f=lineFeatures(line,cfg);
-  let p=Math.max(0,f.birthday-2)*10+f.consecutive*12+Math.max(0,f.sameLast-1)*4;
-  return Math.max(0,Math.min(100,100-p));
+  return playerScoreDetails(line,[],cfg).lowSharing;
 }
 
 function modelScore(line,a,cfg){
@@ -602,7 +816,8 @@ function modelScore(line,a,cfg){
   pairAvg=pairCount?pairAvg/pairCount:0;
   const pairStrength=normZ((pairAvg-a.pairMean)/a.pairStd);
 
-  const sharing=sharingScore(line,cfg);
+  const player=playerScoreDetails(line,[],cfg);
+  const sharing=player.lowSharing;
 
   const weights=getModelWeights();
 
@@ -643,7 +858,8 @@ function modelScore(line,a,cfg){
     odd:f.odd,
     low:f.low,
     weights,
-    reasons
+    reasons,
+    player
   };
 }
 
@@ -765,18 +981,37 @@ function starPool(a,strategy,cfg){
   return rows.sort((x,y)=>y.value-x.value);
 }
 
+
+function choosePlayerStars(cfg,usedPairs){
+  if(!cfg.stars)return[];
+  const candidates=[];
+  for(let a=1;a<=cfg.starMax;a++){
+    for(let b=a+1;b<=cfg.starMax;b++){
+      const stars=[a,b];
+      const score=priorPlayerLowSharing([],stars,cfg);
+      candidates.push({stars,score});
+    }
+  }
+  candidates.sort((x,y)=>y.score-x.score);
+  const top=candidates.slice(0,Math.min(14,candidates.length));
+  const fresh=top.filter(x=>!usedPairs.has(x.stars.join("-")));
+  const pool=fresh.length?fresh:top;
+  if(!pool.length)return sample(cfg.starMax,cfg.stars);
+  // Small randomisation avoids every ticket receiving exactly the same pair.
+  const pick=pool[Math.floor(Math.random()*Math.min(5,pool.length))];
+  return [...pick.stars];
+}
+
 function chooseStars(a,strategy,cfg,usedPairs){
   if(!cfg.stars)return[];
   if(strategy==="Pure random")return sample(cfg.starMax,cfg.stars);
 
+  if(strategy==="Low sharing risk")return choosePlayerStars(cfg,usedPairs);
+
   if(strategy==="Validated Edge"){
     const vm=getValidatedModel();
     if(vm.starStatus!=="validated"){
-      for(let tries=0;tries<40;tries++){
-        const s=sample(cfg.starMax,cfg.stars);
-        if(!usedPairs.has(s.join("-")))return s;
-      }
-      return sample(cfg.starMax,cfg.stars);
+      return choosePlayerStars(cfg,usedPairs);
     }
     strategy="Edge AI";
   }
@@ -1182,13 +1417,14 @@ function scoreBar(label,value){
 function renderPicks(items){
   $("#results").innerHTML=items.map((x,i)=>{
     const d=x.detail;
+    const pd=d?playerScoreDetails(x.line,x.stars||[],GAMES[activeGame]):null;
     return `
     <div class="ticket">
       <div class="ticket-head">
         <strong>Line ${i+1}</strong>
         <span class="pill">${d
   ? (d.validationStatus==="neutral"
-      ? `Portfolio ${Math.round(d.payoutScore)}/100`
+      ? `Player ${Math.round(pd?.lowSharing??d.payoutScore)}/100`
       : d.validationStatus==="validated"
         ? `Validated ${Math.round(d.score)}/100`
         : `Research ${Math.round(d.score)}/100`)
@@ -1210,7 +1446,7 @@ function renderPicks(items){
         <div id="why-${i}" class="why-panel hidden">
           <div class="edge-summary">
             <div><b>${Math.round(d.score)}</b><small>${d.validationStatus==="neutral"?"Neutral prediction":"Predictive score"}</small></div>
-            <div><b>${Math.round(d.payoutScore??d.sharing)}</b><small>Low-sharing score</small></div>
+            <div><b>${Math.round(pd?.lowSharing??d.payoutScore??d.sharing)}</b><small>Player Edge</small></div>
             <div><b>${d.sum}</b><small>Number sum</small></div>
           </div>
 
@@ -1219,7 +1455,16 @@ function renderPicks(items){
           ${scoreBar("Pair strength",d.pairStrength)}
           ${scoreBar("Overdue fit",d.overdue)}
           ${scoreBar("Draw structure",d.structure)}
-          ${scoreBar("Low-sharing profile",d.sharing)}
+          ${scoreBar("Player low-sharing",pd?.lowSharing??d.sharing)}
+
+          <div class="player-explain">
+            <b>${pd?.mode==="validated empirical"?"Validated empirical Player Model":"Literature-backed Player prior"}</b>
+            <span>
+              Birthday range ${Math.round((pd?.features?.birthdayShare||0)*100)}% ·
+              ${pd?.features?.lucky7?"contains 7 · ":""}${pd?.features?.unlucky13?"contains 13 · ":""}
+              consecutive pattern ${Math.round((pd?.features?.consecutive||0)*100)}%.
+            </span>
+          </div>
 
           <div class="why-copy">
             ${d.reasons.map(r=>`<p>${r}</p>`).join("")}
@@ -1926,6 +2171,542 @@ function compareChallengerToChampion(windowData,challengerTerms,championTerms){
 }
 
 
+
+function playerMonthNumber(name){
+  const map={jan:"01",feb:"02",mar:"03",apr:"04",may:"05",jun:"06",
+             jul:"07",aug:"08",sep:"09",oct:"10",nov:"11",dec:"12"};
+  return map[String(name).slice(0,3).toLowerCase()]||"01";
+}
+
+function escapeRegExp(s){
+  return String(s).replace(/[.*+?^${}()|[\]\\]/g,"\\$&");
+}
+
+function extractPlayerTierCount(block,label,gameKey){
+  const re=new RegExp(`\\b${escapeRegExp(label)}\\b(?!\\s*\\+)`,"i");
+  const m=re.exec(block);
+  if(!m)return null;
+
+  const after=block.slice(m.index+m[0].length,m.index+m[0].length+550);
+  const cut=after.search(/\n\s*Match\s+\d|\n\s*Totals\b/i);
+  const seg=(cut>=0?after.slice(0,cut):after);
+
+  if(gameKey==="euromillions"){
+    const uk=seg.match(/UK\s+Winners\s*[:|]?\s*([\d,]+)/i);
+    if(uk)return Number(uk[1].replace(/,/g,""));
+    const beforeCurrency=seg.split("£")[0];
+    const vals=(beforeCurrency.match(/\b[\d,]+\b/g)||[])
+      .map(x=>Number(x.replace(/,/g,"")))
+      .filter(Number.isFinite);
+    return vals.length?vals[0]:null;
+  }
+
+  const total=seg.match(/Total\s+Winners\s*[:|]?\s*([\d,]+)/i);
+  if(total)return Number(total[1].replace(/,/g,""));
+
+  const pre=seg.split(/Prize\s+Per\s+Winner|£|Free\s+Ticket/i)[0];
+  const vals=(pre.match(/\b[\d,]+\b/g)||[])
+    .map(x=>Number(x.replace(/,/g,"")))
+    .filter(Number.isFinite);
+  return vals.length?Math.max(...vals):null;
+}
+
+function parsePlayerEvidenceHtml(html,gameKey){
+  try{
+    const cfg=GAMES[gameKey];
+    const doc=new DOMParser().parseFromString(html,"text/html");
+    const text=(doc.body?.innerText||"")
+      .replace(/\u00a0/g," ")
+      .replace(/\r/g,"");
+
+    const dateRe=/(Mon|Tue|Wed|Thu|Fri|Sat|Sun)(?:day)?\s*,?\s*(\d{1,2})\s+(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\s+(\d{4})/gi;
+    const matches=[...text.matchAll(dateRe)];
+    const out=[];
+
+    for(let i=0;i<matches.length;i++){
+      const m=matches[i];
+      const start=m.index+m[0].length;
+      const end=i+1<matches.length?matches[i+1].index:text.length;
+      const block=text.slice(start,end);
+
+      const headEnd=block.search(/Show\s+details|Match\s*\|/i);
+      const head=(headEnd>=0?block.slice(0,headEnd):block.slice(0,350));
+      const vals=(head.match(/\b\d{1,2}\b/g)||[])
+        .map(Number)
+        .filter(n=>n>=1 && n<=Math.max(cfg.max,cfg.starMax));
+
+      if(vals.length<cfg.picks+cfg.stars)continue;
+
+      const numbers=vals.slice(0,cfg.picks).filter(n=>n<=cfg.max).sort((a,b)=>a-b);
+      const stars=cfg.stars?vals.slice(cfg.picks,cfg.picks+cfg.stars).filter(n=>n<=cfg.starMax).sort((a,b)=>a-b):[];
+      if(numbers.length!==cfg.picks || new Set(numbers).size!==cfg.picks)continue;
+      if(cfg.stars && (stars.length!==cfg.stars || new Set(stars).size!==cfg.stars))continue;
+
+      const date=`${m[4]}-${playerMonthNumber(m[3])}-${String(Number(m[2])).padStart(2,"0")}`;
+      const tiers={
+        match2:extractPlayerTierCount(block,"Match 2",gameKey),
+        match3:extractPlayerTierCount(block,"Match 3",gameKey),
+        match4:extractPlayerTierCount(block,"Match 4",gameKey),
+        match5:extractPlayerTierCount(block,"Match 5",gameKey)
+      };
+
+      if(!Number.isFinite(tiers.match2)||!Number.isFinite(tiers.match3))continue;
+      out.push({date,numbers,stars,tiers,source:"UK Lottery Stats"});
+    }
+
+    return out;
+  }catch{
+    return [];
+  }
+}
+
+async function refreshPlayerEvidence(){
+  const status=$("#playerEvidenceStatus");
+  const url=PLAYER_EVIDENCE_URLS[activeGame];
+  if(!url)return;
+
+  status.textContent="Refreshing recent prize-winner evidence…";
+
+  let parsed=[];
+  for(const candidate of [corsProxy(url),url]){
+    try{
+      const r=await fetchWithTimeout(candidate,9000);
+      if(!r.ok)continue;
+      parsed=parsePlayerEvidenceHtml(await r.text(),activeGame);
+      if(parsed.length)break;
+    }catch{}
+  }
+
+  if(!parsed.length){
+    status.textContent="Could not refresh Player evidence right now. Existing cached evidence is unchanged; CSV import is available in Settings.";
+    renderPlayerModelPanel();
+    return;
+  }
+
+  const merged=savePlayerEvidence([...getPlayerEvidence(),...parsed]);
+  status.textContent=`Player evidence refreshed: ${parsed.length} rows read, ${merged.length} unique rows cached.`;
+  renderPlayerModelPanel();
+  renderPlayerModelStatus();
+}
+
+function playerEvidencePressure(row){
+  const t=row.tiers||{};
+  const m2=Number(t.match2),m3=Number(t.match3),m4=Number(t.match4),m5=Number(t.match5);
+  if(!(m2>0)||!(m3>=0))return null;
+
+  // Winner-count ratios reduce sales-volume sensitivity. This is a proxy
+  // for selection clustering, not a direct measurement of ticket popularity.
+  const r3=Math.log((m3+10)/(m2+1000));
+  const r4=Number.isFinite(m4)?Math.log((m4+1)/(m3+20)):0;
+  const r5=Number.isFinite(m5)&&Number.isFinite(m4)?Math.log((m5+.5)/(m4+2)):0;
+  return .70*r3+.22*r4+.08*r5;
+}
+
+function solveLinearSystem(A,b){
+  const n=A.length;
+  const M=A.map((row,i)=>[...row,b[i]]);
+
+  for(let col=0;col<n;col++){
+    let pivot=col;
+    for(let r=col+1;r<n;r++)if(Math.abs(M[r][col])>Math.abs(M[pivot][col]))pivot=r;
+    [M[col],M[pivot]]=[M[pivot],M[col]];
+
+    const div=M[col][col];
+    if(Math.abs(div)<1e-10)return null;
+    for(let c=col;c<=n;c++)M[col][c]/=div;
+
+    for(let r=0;r<n;r++){
+      if(r===col)continue;
+      const factor=M[r][col];
+      for(let c=col;c<=n;c++)M[r][c]-=factor*M[col][c];
+    }
+  }
+  return M.map(r=>r[n]);
+}
+
+function fitPlayerRidge(rows,lambda=2.5){
+  const cfg=GAMES[activeGame];
+  const clean=rows.map(r=>({
+    row:r,
+    x:playerFeatureVector(r.numbers,cfg),
+    y:playerEvidencePressure(r)
+  })).filter(o=>Number.isFinite(o.y));
+
+  if(clean.length<25)return null;
+
+  const means=PLAYER_FEATURE_KEYS.map(k=>mean(clean.map(o=>o.x[k])));
+  const sds=PLAYER_FEATURE_KEYS.map((k,j)=>{
+    const vals=clean.map(o=>o.x[k]);
+    const m=means[j];
+    return Math.sqrt(mean(vals.map(v=>(v-m)**2)))||1;
+  });
+
+  const yMean=mean(clean.map(o=>o.y));
+  const ySd=Math.sqrt(mean(clean.map(o=>(o.y-yMean)**2)))||1;
+  const Z=clean.map(o=>[
+    1,
+    ...PLAYER_FEATURE_KEYS.map((k,j)=>(o.x[k]-means[j])/sds[j])
+  ]);
+  const y=clean.map(o=>(o.y-yMean)/ySd);
+
+  const p=Z[0].length;
+  const A=Array.from({length:p},()=>Array(p).fill(0));
+  const b=Array(p).fill(0);
+
+  for(let i=0;i<Z.length;i++){
+    for(let r=0;r<p;r++){
+      b[r]+=Z[i][r]*y[i];
+      for(let c=0;c<p;c++)A[r][c]+=Z[i][r]*Z[i][c];
+    }
+  }
+  for(let j=1;j<p;j++)A[j][j]+=lambda;
+
+  const beta=solveLinearSystem(A,b);
+  if(!beta)return null;
+
+  const preds=Z.map(z=>z.reduce((s,v,j)=>s+v*beta[j],0));
+  return {
+    coefficients:beta,
+    featureMean:means,
+    featureSd:sds,
+    outcomeMean:yMean,
+    outcomeSd:ySd,
+    predictionMean:mean(preds),
+    predictionSd:Math.sqrt(mean(preds.map(v=>(v-mean(preds))**2)))||1,
+    n:clean.length
+  };
+}
+
+function predictPlayerRidge(row,fit){
+  const cfg=GAMES[activeGame];
+  const x=playerFeatureVector(row.numbers,cfg);
+  let pred=fit.coefficients[0]||0;
+  for(let j=0;j<PLAYER_FEATURE_KEYS.length;j++){
+    pred+=(fit.coefficients[j+1]||0)*
+      ((x[PLAYER_FEATURE_KEYS[j]]-fit.featureMean[j])/(fit.featureSd[j]||1));
+  }
+  return pred;
+}
+
+function playerPermutationP(preds,actual,perms=600){
+  const observed=correlation(preds,actual);
+  const rng=seededRng(hashSeed(`${activeGame}|player-permutation|${actual.length}|${actual.join("|")}`));
+  let extreme=0;
+
+  for(let p=0;p<perms;p++){
+    const shuffled=[...actual];
+    for(let i=shuffled.length-1;i>0;i--){
+      const j=Math.floor(rng()*(i+1));
+      [shuffled[i],shuffled[j]]=[shuffled[j],shuffled[i]];
+    }
+    if(correlation(preds,shuffled)>=observed)extreme++;
+  }
+  return {observed,p:(extreme+1)/(perms+1)};
+}
+
+function playerValidationState(){
+  const evidence=getPlayerEvidence()
+    .filter(r=>normaliseDateValue(r.date))
+    .sort((a,b)=>normaliseDateValue(a.date).localeCompare(normaliseDateValue(b.date)));
+  const last=lastPlayerValidationRun();
+  if(!last){
+    return {
+      first:true,
+      ready:evidence.length>=PLAYER_MIN_FIRST_VALIDATION,
+      evidence,
+      fresh:[],
+      required:PLAYER_MIN_FIRST_VALIDATION
+    };
+  }
+  const cutoff=normaliseDateValue(last.cutoffDate);
+  const fresh=evidence.filter(r=>normaliseDateValue(r.date)>cutoff);
+  return {
+    first:false,
+    ready:fresh.length>=PLAYER_MIN_FRESH_VALIDATION,
+    evidence,
+    fresh,
+    cutoff,
+    required:PLAYER_MIN_FRESH_VALIDATION
+  };
+}
+
+async function runPlayerValidation(){
+  const status=$("#playerEvidenceStatus");
+  const result=$("#playerModelResults");
+  const state=playerValidationState();
+
+  if(state.evidence.length<PLAYER_MIN_FIRST_VALIDATION){
+    status.textContent=`Player validation NOT RUN: ${state.evidence.length}/${PLAYER_MIN_FIRST_VALIDATION} evidence rows are cached. The first chronological holdout is preserved until the full production threshold is reached.`;
+    renderPlayerModelPanel();
+    return;
+  }
+
+  if(!state.first && !state.ready){
+    status.textContent=`Player validation locked: ${state.fresh.length}/${state.required} genuinely new evidence rows exist after ${state.cutoff}.`;
+    renderPlayerModelPanel();
+    return;
+  }
+
+  status.textContent="Running chronological Player Model validation…";
+  await new Promise(r=>setTimeout(r,0));
+
+  let train=[],test=[];
+  if(state.first){
+    const split=Math.max(25,Math.floor(state.evidence.length*.70));
+    train=state.evidence.slice(0,split);
+    test=state.evidence.slice(split);
+  }else{
+    train=state.evidence.filter(r=>normaliseDateValue(r.date)<=state.cutoff);
+    test=state.fresh;
+  }
+
+  const fit=fitPlayerRidge(train);
+  if(!fit || test.length<12){
+    status.textContent="Player validation NOT RUN: insufficient usable training/test observations after parsing.";
+    return;
+  }
+
+  const testClean=test.map(r=>({
+    row:r,
+    y:playerEvidencePressure(r)
+  })).filter(o=>Number.isFinite(o.y));
+
+  const preds=testClean.map(o=>predictPlayerRidge(o.row,fit));
+  const actual=testClean.map(o=>(o.y-fit.outcomeMean)/(fit.outcomeSd||1));
+  const perm=playerPermutationP(preds,actual,600);
+
+  const enoughForValidation=
+    state.evidence.length>=PLAYER_MIN_FIRST_VALIDATION &&
+    testClean.length>=24;
+
+  const passed=
+    enoughForValidation &&
+    perm.observed>=.18 &&
+    perm.p<=.05;
+
+  const old=getPlayerModel();
+  const cutoffDate=normaliseDateValue(test.at(-1)?.date||state.evidence.at(-1)?.date);
+
+  const candidate={
+    schema:1,
+    status:passed?"validated":"prior",
+    coefficients:passed?fit.coefficients:null,
+    featureMean:passed?fit.featureMean:null,
+    featureSd:passed?fit.featureSd:null,
+    predictionMean:passed?fit.predictionMean:0,
+    predictionSd:passed?fit.predictionSd:1,
+    validatedAt:new Date().toISOString(),
+    cutoffDate,
+    evidenceCount:state.evidence.length,
+    trainCount:train.length,
+    holdoutCount:testClean.length,
+    holdoutCorrelation:perm.observed,
+    holdoutP:perm.p,
+    sources:"winner-count ratio proxy"
+  };
+
+  // A failed challenger does not erase an already validated Player Model.
+  if(passed || old.status!=="validated")savePlayerModel(candidate);
+
+  recordPlayerValidationRun({
+    at:new Date().toISOString(),
+    cutoffDate,
+    evidenceCount:state.evidence.length,
+    trainCount:train.length,
+    testCount:testClean.length,
+    correlation:perm.observed,
+    p:perm.p,
+    passed
+  });
+
+  const coefRows=PLAYER_FEATURE_KEYS.map((k,j)=>({
+    key:k,
+    beta:fit.coefficients[j+1]||0
+  })).sort((a,b)=>Math.abs(b.beta)-Math.abs(a.beta));
+
+  const labels={
+    birthdayShare:"Birthday-range share",
+    lowNumberBias:"Lower-number preference",
+    lucky7:"Contains 7",
+    unlucky13:"Contains 13",
+    consecutive:"Consecutive numbers",
+    sameLast:"Repeated last digit",
+    arithmeticPattern:"Arithmetic pattern",
+    allBirthday:"All numbers ≤31"
+  };
+
+  result.innerHTML=`
+    <div class="validation-decision ${passed?"decision-pass":"decision-neutral"}">
+      <b>${passed?"Player Model validated":"Player Model not yet validated"}</b>
+      <p>
+        Holdout correlation between predicted popularity pressure and later winner-count pressure:
+        ${perm.observed.toFixed(3)} · one-sided permutation p=${perm.p.toFixed(3)}.
+        ${enoughForValidation?"":"This run is exploratory because the evidence set is still below the production threshold."}
+      </p>
+    </div>
+
+    <div class="bt-grid">
+      <div class="bt-card"><b>${state.evidence.length}</b><small>evidence rows</small></div>
+      <div class="bt-card"><b>${train.length}</b><small>training rows</small></div>
+      <div class="bt-card"><b>${testClean.length}</b><small>later holdout rows</small></div>
+      <div class="bt-card"><b>${perm.observed.toFixed(3)}</b><small>holdout correlation</small></div>
+      <div class="bt-card"><b>${perm.p.toFixed(3)}</b><small>permutation p-value</small></div>
+      <div class="bt-card"><b>${passed?"empirical":"prior"}</b><small>production Player Model</small></div>
+    </div>
+
+    <div class="settings-card">
+      <b>Learned feature directions — research output</b>
+      <p class="selection-bias-note">
+        Coefficients are fitted on the training period. Only the later holdout correlation above is evidential.
+      </p>
+      <table class="bt-table">
+        <tr><th>Feature</th><th>Coefficient</th><th>Interpretation</th></tr>
+        ${coefRows.map(x=>`
+          <tr>
+            <td>${labels[x.key]}</td>
+            <td>${formatSigned(x.beta,3)}</td>
+            <td>${x.beta>0?"more winner pressure / more popular":"less winner pressure / less popular"}</td>
+          </tr>`).join("")}
+      </table>
+    </div>
+
+    <div class="settings-card private-evidence-card">
+      <b>What is being tested</b>
+      <p class="muted">
+        Prize-tier winner counts are converted into ratios such as Match 3 / Match 2 to reduce the effect of changing ticket sales.
+        The model asks whether human-choice features of the winning line predict unusually high or low numbers of winners.
+      </p>
+      <p class="muted">
+        This is an indirect proxy for player selection popularity, not direct ticket-level choice data.
+      </p>
+    </div>
+  `;
+
+  status.textContent="Player Model validation complete.";
+  renderPlayerModelPanel();
+  renderPlayerModelStatus();
+  renderProductionStatus();
+}
+
+function renderPlayerModelStatus(){
+  const m=getPlayerModel();
+  const evidence=getPlayerEvidence();
+  const last=lastPlayerValidationRun();
+
+  const status=m.status==="validated"
+    ? `Validated empirical Player Model · holdout r=${Number(m.holdoutCorrelation||0).toFixed(3)}, p=${Number(m.holdoutP||1).toFixed(3)}`
+    : `Literature-backed prior · local empirical validation not established`;
+
+  const el=$("#playerModelStatus");
+  if(el){
+    el.textContent=`${status}. ${evidence.length} prize-breakdown evidence rows cached.${last?` Last production-style Player test ended ${last.cutoffDate}.`:""}`;
+  }
+}
+
+function renderPlayerModelPanel(){
+  const el=$("#playerModelPanel");
+  if(!el)return;
+
+  const m=getPlayerModel();
+  const evidence=getPlayerEvidence();
+  const state=playerValidationState();
+
+  const ready=state.first
+    ? `${evidence.length}/${PLAYER_MIN_FIRST_VALIDATION} rows toward full production validation`
+    : `${state.fresh.length}/${PLAYER_MIN_FRESH_VALIDATION} fresh rows toward next validation`;
+
+  el.innerHTML=`
+    <div class="player-head">
+      <div>
+        <span class="label">PLAYER EDGE</span>
+        <h3>${m.status==="validated"?"Empirical model active":"Literature prior active"}</h3>
+      </div>
+      <span class="pill">${m.status==="validated"?"VALIDATED":"PRIOR"}</span>
+    </div>
+    <p class="muted">
+      Estimates how commonly other players may choose a combination. It does not change draw probability;
+      the objective is to reduce potential prize sharing.
+    </p>
+    <div class="player-metrics">
+      <div><b>${evidence.length}</b><small>evidence rows</small></div>
+      <div><b>${m.status==="validated"?Number(m.holdoutCorrelation||0).toFixed(2):"—"}</b><small>holdout r</small></div>
+      <div><b>${m.status==="validated"?Number(m.holdoutP||1).toFixed(3):"—"}</b><small>p-value</small></div>
+    </div>
+    <div class="player-readiness">${ready}</div>
+  `;
+}
+
+function splitCsvRow(line){
+  const out=[];let cur="",q=false;
+  for(let i=0;i<line.length;i++){
+    const ch=line[i];
+    if(ch==='"'){
+      if(q&&line[i+1]==='"'){cur+='"';i++;}else q=!q;
+    }else if(ch===","&&!q){out.push(cur.trim());cur="";}else cur+=ch;
+  }
+  out.push(cur.trim());return out;
+}
+
+function parsePlayerEvidenceCsv(text,gameKey){
+  const cfg=GAMES[gameKey];
+  const lines=String(text||"").replace(/\r/g,"").split("\n").filter(x=>x.trim());
+  if(lines.length<2)return[];
+
+  const headers=splitCsvRow(lines[0]).map(h=>h.toLowerCase().replace(/[_-]/g," ").trim());
+  const find=aliases=>headers.findIndex(h=>aliases.includes(h));
+  const nIdx=[];
+  for(let i=1;i<=cfg.picks;i++)nIdx.push(find([`n${i}`,`ball ${i}`,`ball${i}`,`number ${i}`,`number${i}`]));
+  const sIdx=[];
+  for(let i=1;i<=cfg.stars;i++)sIdx.push(find([`s${i}`,`star ${i}`,`star${i}`,`lucky star ${i}`,`luckystar${i}`]));
+
+  const dateIdx=find(["date","draw date","drawdate"]);
+  const m2Idx=find(["match2","match 2","match 2 ukwinners","match 2 uk winners"]);
+  const m3Idx=find(["match3","match 3","match 3 ukwinners","match 3 uk winners"]);
+  const m4Idx=find(["match4","match 4","match 4 ukwinners","match 4 uk winners"]);
+  const m5Idx=find(["match5","match 5","match 5 ukwinners","match 5 uk winners"]);
+
+  if(dateIdx<0 || nIdx.some(i=>i<0) || m2Idx<0 || m3Idx<0)return[];
+
+  const out=[];
+  for(let r=1;r<lines.length;r++){
+    const v=splitCsvRow(lines[r]);
+    const numbers=nIdx.map(i=>Number(v[i])).sort((a,b)=>a-b);
+    const stars=sIdx.map(i=>Number(v[i])).filter(Number.isFinite).sort((a,b)=>a-b);
+
+    if(numbers.some(n=>!Number.isInteger(n)||n<1||n>cfg.max) || new Set(numbers).size!==cfg.picks)continue;
+    if(cfg.stars && (stars.length!==cfg.stars || new Set(stars).size!==cfg.stars))continue;
+
+    const num=i=>{
+      if(i<0)return null;
+      const x=Number(String(v[i]||"").replace(/[£,\s]/g,""));
+      return Number.isFinite(x)?x:null;
+    };
+
+    const tiers={match2:num(m2Idx),match3:num(m3Idx),match4:num(m4Idx),match5:num(m5Idx)};
+    if(!Number.isFinite(tiers.match2)||!Number.isFinite(tiers.match3))continue;
+
+    out.push({date:v[dateIdx],numbers,stars,tiers,source:"CSV import"});
+  }
+  return out;
+}
+
+async function importPlayerEvidenceCsv(){
+  const f=$("#playerCsvInput")?.files?.[0];
+  const status=$("#playerImportStatus");
+  if(!f){
+    status.textContent="Choose a Player evidence CSV first.";
+    return;
+  }
+  const rows=parsePlayerEvidenceCsv(await f.text(),activeGame);
+  if(!rows.length){
+    status.textContent="No compatible evidence rows found. Required: date, ball columns, Match 2 winners and Match 3 winners.";
+    return;
+  }
+  const merged=savePlayerEvidence([...getPlayerEvidence(),...rows]);
+  status.textContent=`Imported ${rows.length} evidence rows · ${merged.length} unique rows cached.`;
+  renderPlayerModelPanel();
+  renderPlayerModelStatus();
+}
 function renderHoldoutSafetyStatus(){
   const el=$("#holdoutSafetyStatus");
   if(!el)return;
@@ -1968,7 +2749,7 @@ function renderProductionStatus(){
   el.innerHTML=`
     <b>${m.status==="validated"?"Validated Edge active":m.status==="neutral"?"Portfolio Edge active":"Validated Edge not yet tested"}</b>
     <span><strong>Draw Model:</strong> ${drawStatus}</span>
-    <span><strong>Player Model:</strong> heuristic / not yet empirically validated</span>
+    <span><strong>Player Model:</strong> ${getPlayerModel().status==="validated"?"validated empirical popularity model":"literature-backed prior; local validation pending"}</span>
     <span><strong>Portfolio Optimiser:</strong> active</span>
     <span>${validatedStatusText()}</span>`;
 }
@@ -2627,6 +3408,8 @@ async function switchGame(key){
   $("#importStatus").textContent=`${GAMES[key].name}: ${draws.length} draws stored locally.`;
   renderWeightStatus();
   renderValidatedModelStatus();
+  renderPlayerModelStatus();
+  renderPlayerModelPanel();
   renderHoldoutSafetyStatus();
   $("#concentrationMode").value=getConcentrationMode();
   renderConcentrationInfo();
@@ -2700,6 +3483,8 @@ $("#concentrationMode").onchange=e=>{
 };
 renderConcentrationInfo();
 renderValidatedModelStatus();
+renderPlayerModelStatus();
+renderPlayerModelPanel();
 renderHoldoutSafetyStatus();
 $("#minusLine").onclick=()=>{$("#lineCount").textContent=lineCount=Math.max(1,lineCount-1)};
 $("#plusLine").onclick=()=>{$("#lineCount").textContent=lineCount=Math.min(10,lineCount+1)};
@@ -2707,6 +3492,8 @@ $("#generateBtn").onclick=generate;
 $("#lottoGame").onclick=()=>switchGame("lotto");
 $("#euroGame").onclick=()=>switchGame("euromillions");
 $("#refreshBtn").onclick=refreshData;
+$("#refreshPlayerEvidence").onclick=refreshPlayerEvidence;
+$("#runPlayerValidation").onclick=runPlayerValidation;
 $("#runFullValidation").onclick=runFullValidationSuite;
 $("#runBacktest").onclick=runBacktest;
 $("#calibrateModel").onclick=calibrateWeights;
@@ -2714,6 +3501,7 @@ $("#calibrateConcentration").onclick=calibrateConcentration;
 $("#comparePortfolioModes").onclick=comparePortfolioModes;
 $("#runAblation").onclick=runFactorAblation;
 $("#importBtn").onclick=importCsv;
+$("#playerImportBtn").onclick=importPlayerEvidenceCsv;
 $("#clearHistory").onclick=()=>{localStorage.removeItem("lottoEdgeHistory");renderHistory()};
 
 $$(".segmented button").forEach(b=>b.onclick=()=>{
@@ -2724,11 +3512,12 @@ $$(".bottom-nav button").forEach(b=>b.onclick=()=>{
   $$(".bottom-nav button").forEach(x=>x.classList.remove("active"));b.classList.add("active");
   $$(".screen").forEach(x=>x.classList.remove("active"));$("#"+b.dataset.screen).classList.add("active");
   if(b.dataset.screen==="historyScreen")renderHistory();
-  if(b.dataset.screen==="settingsScreen"){renderIntegrity();renderWeightStatus();renderValidatedModelStatus();renderConcentrationInfo();}
+  if(b.dataset.screen==="statsScreen")renderPlayerModelPanel();
+  if(b.dataset.screen==="settingsScreen"){renderIntegrity();renderWeightStatus();renderValidatedModelStatus();renderPlayerModelStatus();renderConcentrationInfo();}
 });
 
 if("serviceWorker" in navigator){
-  navigator.serviceWorker.register("service-worker.js?version=21.2")
+  navigator.serviceWorker.register("service-worker.js?version=22")
     .then(reg=>{
       // Check for a newer worker after the app has already rendered.
       setTimeout(()=>reg.update().catch(()=>{}),1500);
