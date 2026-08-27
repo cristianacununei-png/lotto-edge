@@ -52,3 +52,15 @@ longer be part of the normal update workflow.
 
 UK Lotto history also uses a direct source plus browser-CORS fallback sources, replacing
 the five-row demo dataset whenever a full archive can be reached.
+
+## v8 — Fast switching and background data loading
+
+Game switching no longer waits for remote APIs or CORS proxies. Lotto/EuroMillions buttons
+switch immediately using locally stored data, while stale or incomplete history is refreshed
+in the background with strict timeouts.
+
+The main screen now displays data-load status. Analysis for the current dataset is memoized,
+so switching tabs and rendering stats does not repeatedly recalculate thousands of historical
+draws.
+
+This version is designed so a failing external Lotto source cannot freeze or slow the UI.

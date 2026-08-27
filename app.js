@@ -1,7 +1,7 @@
 
 const $ = s => document.querySelector(s);
 
-const APP_VERSION="7.0.0";
+const APP_VERSION="8.0.0";
 
 async function checkAppVersion(){
   try{
@@ -58,6 +58,13 @@ let activeGame=localStorage.getItem("lottoEdgeGame")||"lotto";
 let draws=[];
 let lineCount=5;
 let activeStat="hot";
+let analysisCache={key:null,value:null};
+let backgroundLoads={lotto:false,euromillions:false};
+
+function invalidateAnalysis(){
+  analysisCache={key:null,value:null};
+}
+
 
 function parseCsv(text, gameKey){
   const cfg=GAMES[gameKey];
@@ -129,46 +136,101 @@ function loadStored(key){
 }
 function saveStored(key,d){localStorage.setItem(GAMES[key].storage,JSON.stringify(d))}
 
-async function fetchFullLottoHistory(){
-  for(const url of LOTTO_SOURCES){
+
+async function fetchWithTimeout(url,ms=4500){
+  const controller=new AbortController();
+  const timer=setTimeout(()=>controller.abort(),ms);
+  try{
+    return await fetch(url,{cache:"no-store",signal:controller.signal});
+  }finally{
+    clearTimeout(timer);
+  }
+}
+
+async function fetchFullLottoHistoryFast(){
+  // Short, bounded attempts only. Never block game switching.
+  const sources=[
+    LOTTO_REMOTE,
+    "https://api.allorigins.win/raw?url="+encodeURIComponent(LOTTO_REMOTE)
+  ];
+  for(const url of sources){
     try{
-      const r=await fetch(url,{cache:"no-store"});
-      if(!r.ok) continue;
-      const text=await r.text();
-      const parsed=parseLottoJson(text);
-      if(parsed.length>2500){
-        return [...parsed].reverse(); // source is oldest-first
-      }
+      const r=await fetchWithTimeout(url,4500);
+      if(!r.ok)continue;
+      const parsed=parseLottoJson(await r.text());
+      if(parsed.length>2500)return [...parsed].reverse();
     }catch{}
   }
   return [];
 }
 
-async function ensureData(key){
-  if(key==="lotto"){
-    let d=loadStored(key);
+async function backgroundRefreshGame(key,manual=false){
+  if(backgroundLoads[key])return;
+  if(!navigator.onLine){
+    if(manual) $("#updateStatus").textContent="Offline. Using locally stored history.";
+    return;
+  }
+  backgroundLoads[key]=true;
 
-    // If the device only has the old demo data, replace it immediately.
-    if((!d.length || d.length<1000) && navigator.onLine){
-      const full=await fetchFullLottoHistory();
+  const mainStatus=$("#dataStatusMain");
+  if(key===activeGame && mainStatus){
+    mainStatus.textContent=`Updating ${GAMES[key].name} history in the background…`;
+  }
+
+  try{
+    if(key==="lotto"){
+      const full=await fetchFullLottoHistoryFast();
       if(full.length>2500){
-        d=full;
-        saveStored(key,d);
+        saveStored("lotto",full);
         localStorage.setItem("lottoEdgeLottoLastUpdate",Date.now());
+        if(activeGame==="lotto"){
+          draws=full;invalidateAnalysis();summary();renderStats(activeStat);
+          if(mainStatus)mainStatus.textContent=`Full Lotto history loaded locally: ${draws.length} draws.`;
+        }
+        if(manual)$("#updateStatus").textContent=`Lotto history updated: ${full.length} draws.`;
+      }else{
+        if(key===activeGame && mainStatus)mainStatus.textContent=
+          draws.length<1000
+            ? "Full Lotto history source is currently unavailable; using local fallback data."
+            : `${draws.length} Lotto draws stored locally.`;
+        if(manual)$("#updateStatus").textContent="Could not reach the full Lotto archive right now.";
       }
+    }else{
+      const r=await fetchWithTimeout(EURO_REMOTE,4500);
+      if(!r.ok)throw new Error();
+      const inc=parseCsv(await r.text(),"euromillions");
+      if(!inc.length)throw new Error();
+      const merged=dedupe([...inc,...loadStored("euromillions")]);
+      saveStored("euromillions",merged);
+      localStorage.setItem("lottoEdgeEuroLastUpdate",Date.now());
+      if(activeGame==="euromillions"){
+        draws=merged;invalidateAnalysis();summary();renderStats(activeStat);
+        if(mainStatus)mainStatus.textContent=`EuroMillions history loaded locally: ${draws.length} draws.`;
+      }
+      if(manual)$("#updateStatus").textContent=`EuroMillions updated: ${merged.length} draws.`;
     }
+  }catch{
+    if(manual)$("#updateStatus").textContent="Update unavailable. Stored history remains usable.";
+  }finally{
+    backgroundLoads[key]=false;
+  }
+}
 
-    if(!d.length){
-      d=LOTTO_DEMO;
-      saveStored(key,d);
-    }
+async function ensureData(key){
+  let d=loadStored(key);
+
+  if(key==="lotto"){
+    if(!d.length){d=LOTTO_DEMO;saveStored(key,d);}
     return d;
   }
-  let d=loadStored(key);
+
   if(!d.length){
     try{
-      const r=await fetch("euromillions_history.csv",{cache:"no-store"});
-      if(r.ok){d=parseCsv(await r.text(),key);if(d.length)saveStored(key,d)}
+      const r=await fetch("euromillions_history.csv",{cache:"force-cache"});
+      if(r.ok){
+        d=parseCsv(await r.text(),"euromillions");
+        if(d.length)saveStored(key,d);
+      }
     }catch{}
   }
   return d;
@@ -188,6 +250,9 @@ function normZ(z){return Math.max(0,Math.min(100,50+15*z))}
 
 function buildAnalysis(history=draws){
   const cfg=GAMES[activeGame];
+  const isCurrent=history===draws;
+  const cacheKey=isCurrent ? `${activeGame}:${history.length}:${history[0]?.date||""}` : null;
+  if(isCurrent && analysisCache.key===cacheKey)return analysisCache.value;
   const freq=Array(cfg.max+1).fill(0),last=Array(cfg.max+1).fill(history.length);
   const pairs={};
   const sf=Array(cfg.starMax+1).fill(0),sl=Array(cfg.starMax+1).fill(history.length);
@@ -211,13 +276,15 @@ function buildAnalysis(history=draws){
 
   const pairVals=Object.values(pairs),pm=mean(pairVals),psd=Math.sqrt(mean(pairVals.map(x=>(x-pm)**2)))||1;
 
-  return {
+  const result={
     freq,last,pairs,recent,starFreq:sf,starLast:sl,
     sumMean:sm,sumStd:ssd,
     oddMode:mode(odds,Math.floor(cfg.picks/2)),
     lowMode:mode(lows,Math.floor(cfg.picks/2)),
     pairMean:pm,pairStd:psd
   };
+  if(isCurrent)analysisCache={key:cacheKey,value:result};
+  return result;
 }
 
 function sample(max,k,rng=Math.random){
@@ -513,63 +580,46 @@ async function runBacktest(){
 }
 
 async function switchGame(key){
-  activeGame=key;localStorage.setItem("lottoEdgeGame",key);
-  draws=await ensureData(key);
+  // UI changes immediately; network work never blocks the game button.
+  activeGame=key;
+  localStorage.setItem("lottoEdgeGame",key);
   $("#gameLabel").textContent=GAMES[key].label;
   $("#lottoGame").classList.toggle("active",key==="lotto");
   $("#euroGame").classList.toggle("active",key==="euromillions");
-  $("#results").innerHTML="";$("#confidenceCard").classList.add("hidden");
-  summary();renderStats(activeStat);
+  $("#results").innerHTML="";
+  $("#confidenceCard").classList.add("hidden");
+
+  draws=await ensureData(key);
+  invalidateAnalysis();
+  summary();
+  renderStats(activeStat);
   $("#importStatus").textContent=`${GAMES[key].name}: ${draws.length} draws stored locally.`;
 
-  const stampKey=key==="lotto" ? "lottoEdgeLottoLastUpdate" : "lottoEdgeEuroLastUpdate";
+  const mainStatus=$("#dataStatusMain");
+  if(mainStatus){
+    mainStatus.textContent=draws.length<1000 && key==="lotto"
+      ? "Using local fallback while full Lotto history updates in the background…"
+      : `${draws.length} ${GAMES[key].name} draws stored locally.`;
+  }
+
+  const stampKey=key==="lotto"?"lottoEdgeLottoLastUpdate":"lottoEdgeEuroLastUpdate";
   const last=Number(localStorage.getItem(stampKey)||0);
-  if(navigator.onLine && Date.now()-last>12*60*60*1000){
-    setTimeout(()=>refreshData(),250);
+  if(navigator.onLine && (draws.length<1000 || Date.now()-last>12*60*60*1000)){
+    setTimeout(()=>backgroundRefreshGame(key,false),50);
   }
 }
 
 async function refreshData(){
-  if(!navigator.onLine){
-    $("#updateStatus").textContent=`Offline. Using ${draws.length} stored ${GAMES[activeGame].name} draws.`;
-    return;
-  }
-
-  try{
-    $("#updateStatus").textContent=`Checking ${GAMES[activeGame].name} updates…`;
-
-    if(activeGame==="lotto"){
-      const newest=await fetchFullLottoHistory();
-      if(newest.length<2500)throw new Error();
-      const before=draws.length;
-      draws=dedupe([...newest,...draws]);
-      saveStored("lotto",draws);
-      localStorage.setItem("lottoEdgeLottoLastUpdate",Date.now());
-      summary();renderStats(activeStat);
-      $("#updateStatus").textContent=`Lotto updated: ${draws.length} historical draws stored.`;
-      return;
-    }
-
-    const r=await fetch(EURO_REMOTE,{cache:"no-store"});
-    if(!r.ok)throw new Error();
-    const incoming=parseCsv(await r.text(),"euromillions");
-    if(!incoming.length)throw new Error();
-    const before=draws.length;
-    draws=dedupe([...incoming,...draws]);
-    saveStored("euromillions",draws);
-    summary();renderStats(activeStat);
-    $("#updateStatus").textContent=`EuroMillions updated: ${draws.length} historical draws stored.`;
-  }catch{
-    $("#updateStatus").textContent="Automatic update unavailable right now. Stored history remains usable offline.";
-  }
+  return backgroundRefreshGame(activeGame,true);
 }
+
 async function importCsv(){
   const f=$("#csvInput").files[0];
   if(!f){$("#importStatus").textContent="Choose a CSV first.";return}
   const inc=parseCsv(await f.text(),activeGame);
   if(!inc.length){$("#importStatus").textContent="No valid rows detected for this game.";return}
   draws=dedupe([...inc,...draws]);saveStored(activeGame,draws);
-  summary();renderStats(activeStat);
+  invalidateAnalysis();summary();renderStats(activeStat);
   $("#importStatus").textContent=`Imported ${inc.length} rows; ${draws.length} total stored.`;
 }
 
