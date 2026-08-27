@@ -101,3 +101,16 @@ sorts merged history newest-first, and exposes data-integrity status in Settings
 
 The gap detector intentionally flags only unusually long recent gaps; it does not assume
 that historical draw schedules were identical across the entire archive.
+
+
+## v12 — Instant startup / silent updates
+
+The PWA shell is now cache-first. Installed users get the cached interface immediately instead
+of waiting for GitHub Pages on every launch.
+
+Only version.json is checked live. If a new deployment exists, the new service worker and
+assets are downloaded silently in the background and become available on a subsequent launch.
+There is no forced reload loop and no need to manually clear site data during normal updates.
+
+Lottery-history refreshes are deferred until after the interface has rendered, so remote APIs
+cannot delay initial app startup.

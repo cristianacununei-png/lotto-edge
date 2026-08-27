@@ -1,24 +1,28 @@
 
 const $ = s => document.querySelector(s);
 
-const APP_VERSION="11.0.0";
+const APP_VERSION="12.0.0";
 
-async function checkAppVersion(){
+async function checkAppVersionInBackground(){
   try{
     const r=await fetch("version.json?ts="+Date.now(),{cache:"no-store"});
     if(!r.ok)return;
     const v=await r.json();
     const seen=localStorage.getItem("lottoEdgeAppVersion");
-    if(seen && seen!==v.version){
+
+    if(!seen){
       localStorage.setItem("lottoEdgeAppVersion",v.version);
-      // The new service worker will already be installing; reload once to pick up new shell.
-      setTimeout(()=>location.reload(),250);
       return;
     }
-    localStorage.setItem("lottoEdgeAppVersion",v.version);
+
+    if(seen!==v.version){
+      localStorage.setItem("lottoEdgeAppVersion",v.version);
+      const reg=await navigator.serviceWorker?.getRegistration();
+      reg?.update().catch(()=>{});
+      localStorage.setItem("lottoEdgeUpdateReady","1");
+    }
   }catch{}
 }
-
 
 const $$ = s => [...document.querySelectorAll(s)];
 
@@ -794,7 +798,7 @@ async function switchGame(key){
   const stampKey=key==="lotto"?"lottoEdgeLottoLastUpdate":"lottoEdgeEuroLastUpdate";
   const last=Number(localStorage.getItem(stampKey)||0);
   if(navigator.onLine && (draws.length<1000 || Date.now()-last>12*60*60*1000)){
-    setTimeout(()=>backgroundRefreshGame(key,false),50);
+    setTimeout(()=>backgroundRefreshGame(key,false),1800);
   }
 }
 
@@ -843,20 +847,16 @@ $$(".bottom-nav button").forEach(b=>b.onclick=()=>{
 });
 
 if("serviceWorker" in navigator){
-  navigator.serviceWorker.register("service-worker.js?version=7").then(reg=>{
-    reg.update().catch(()=>{});
-  }).catch(()=>{});
-
-  let refreshing=false;
-  navigator.serviceWorker.addEventListener("controllerchange",()=>{
-    if(refreshing)return;
-    refreshing=true;
-    location.reload();
-  });
+  navigator.serviceWorker.register("service-worker.js?version=12")
+    .then(reg=>{
+      // Check for a newer worker after the app has already rendered.
+      setTimeout(()=>reg.update().catch(()=>{}),1500);
+    })
+    .catch(()=>{});
 }
 
 (async()=>{
-  await checkAppVersion();
+  checkAppVersionInBackground();
   await switchGame(activeGame);
   renderHistory();
 })();
