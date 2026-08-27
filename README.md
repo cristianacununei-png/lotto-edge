@@ -88,3 +88,16 @@ The main screen reports the latest locally stored draw date so data freshness is
 
 The current-results update is deliberately a top-up layer rather than the core data source:
 if the internet or proxy is unavailable, Edge AI still has the full deep historical archive.
+
+## v11 — Data integrity and freshness
+
+The main screen now shows:
+- total locally stored draws
+- latest stored draw date
+- whether the recent archive has obvious date gaps
+
+The updater now uses stricter duplicate detection based on normalized dates + number sets,
+sorts merged history newest-first, and exposes data-integrity status in Settings.
+
+The gap detector intentionally flags only unusually long recent gaps; it does not assume
+that historical draw schedules were identical across the entire archive.

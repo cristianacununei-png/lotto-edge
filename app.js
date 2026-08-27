@@ -1,7 +1,7 @@
 
 const $ = s => document.querySelector(s);
 
-const APP_VERSION="10.0.0";
+const APP_VERSION="11.0.0";
 
 async function checkAppVersion(){
   try{
@@ -207,13 +207,7 @@ function parseLottoJson(payload){
 }
 
 function dedupe(items){
-  const seen=new Set(),out=[];
-  for(const d of items){
-    const k=`${d.date}|${d.numbers.join(",")}|${(d.stars||[]).join(",")}`;
-    if(seen.has(k))continue;seen.add(k);out.push(d);
-  }
-  // ISO source sorts correctly lexically. For other formats, preserve current order.
-  return out;
+  return sortedByDateDesc(dedupeStrict(items));
 }
 
 function loadStored(key){
@@ -261,7 +255,7 @@ async function backgroundRefreshGame(key,manual=false){
         localStorage.setItem("lottoEdgeLottoLastUpdate",Date.now());
         if(activeGame==="lotto"){
           draws=merged;invalidateAnalysis?.();summary();renderStats(activeStat);
-          if(mainStatus)mainStatus.textContent=`${draws.length} Lotto draws stored locally · current archive checked.`;
+          if(mainStatus)updateFreshnessStatus();
         }
         if(manual)$("#updateStatus").textContent=`Lotto updated: ${merged.length} historical/current draws stored.`;
       }
@@ -280,7 +274,7 @@ async function backgroundRefreshGame(key,manual=false){
     localStorage.setItem("lottoEdgeEuroLastUpdate",Date.now());
     if(activeGame==="euromillions"){
       draws=merged;invalidateAnalysis?.();summary();renderStats(activeStat);
-      if(mainStatus)mainStatus.textContent=`${draws.length} EuroMillions draws stored locally · current archive checked.`;
+      if(mainStatus)updateFreshnessStatus();
     }
   }catch{}
 }
@@ -555,6 +549,92 @@ function generate(){
   navigator.vibrate?.(35);
 }
 
+
+function normaliseDateValue(value){
+  const raw=String(value||"").replace(/-R\d$/,"").trim();
+  if(/^\d{4}-\d{2}-\d{2}$/.test(raw))return raw;
+
+  // UK archive format can be dd/mm/yyyy.
+  let m=raw.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
+  if(m)return `${m[3]}-${String(m[2]).padStart(2,"0")}-${String(m[1]).padStart(2,"0")}`;
+
+  // Fallback to browser date parsing where safe.
+  const d=new Date(raw);
+  if(!Number.isNaN(d.getTime())){
+    const y=d.getFullYear(),mo=String(d.getMonth()+1).padStart(2,"0"),da=String(d.getDate()).padStart(2,"0");
+    return `${y}-${mo}-${da}`;
+  }
+  return "";
+}
+
+function uniqueDrawKey(d){
+  return `${normaliseDateValue(d.date)}|${d.numbers.join(",")}|${(d.stars||[]).join(",")}`;
+}
+
+function dedupeStrict(items){
+  const seen=new Set(),out=[];
+  for(const d of items){
+    const k=uniqueDrawKey(d);
+    if(seen.has(k))continue;
+    seen.add(k);
+    out.push(d);
+  }
+  return out;
+}
+
+function sortedByDateDesc(items){
+  return [...items].sort((a,b)=>{
+    const ad=normaliseDateValue(a.date),bd=normaliseDateValue(b.date);
+    return bd.localeCompare(ad);
+  });
+}
+
+function latestStoredDate(){
+  const dated=draws.map(d=>normaliseDateValue(d.date)).filter(Boolean).sort().reverse();
+  return dated[0]||"Unknown";
+}
+
+function detectLikelyGaps(){
+  const cfg=GAMES[activeGame];
+  const ds=sortedByDateDesc(draws)
+    .map(d=>normaliseDateValue(d.date))
+    .filter(Boolean)
+    .map(x=>new Date(x+"T00:00:00"));
+
+  if(ds.length<3)return {count:0,examples:[]};
+
+  // Lotto and EuroMillions are normally twice weekly. We flag unusually long gaps
+  // rather than assuming exact draw weekdays, because historical schedules changed.
+  const thresholdDays=activeGame==="lotto"?10:10;
+  const examples=[];
+  let count=0;
+
+  for(let i=0;i<Math.min(ds.length-1,250);i++){
+    const diff=(ds[i]-ds[i+1])/(1000*60*60*24);
+    if(diff>thresholdDays){
+      count++;
+      if(examples.length<3){
+        examples.push(`${ds[i+1].toISOString().slice(0,10)} → ${ds[i].toISOString().slice(0,10)}`);
+      }
+    }
+  }
+  return {count,examples};
+}
+
+function updateFreshnessStatus(){
+  const el=$("#dataStatusMain");
+  if(!el)return;
+  const latest=latestStoredDate();
+  const gaps=detectLikelyGaps();
+  let txt=`${draws.length} ${GAMES[activeGame].name} draws stored locally · latest: ${latest}`;
+  if(gaps.count){
+    txt+=` · ${gaps.count} possible gap${gaps.count===1?"":"s"} detected`;
+  }else{
+    txt+=" · archive looks consistent";
+  }
+  el.textContent=txt;
+}
+
 function latestDateLabel(){
   const first=draws[0];
   if(!first?.date)return "Unknown";
@@ -570,7 +650,7 @@ function summary(){
   $("#hotNumber").textContent=h;$("#overdueNumber").textContent=d;
   const main=$("#dataStatusMain");
   if(main && !main.textContent.includes("Checking")){
-    main.textContent=`${draws.length} ${GAMES[activeGame].name} draws stored locally · latest stored: ${latestDateLabel()}`;
+    updateFreshnessStatus();
   }
 }
 
@@ -674,6 +754,19 @@ async function runBacktest(){
     <div class="settings-card" style="margin-top:12px"><b>${interpretation}</b><p class="muted">This is descriptive historical testing, not evidence that future random draws are predictable.</p></div>`;
 }
 
+
+function renderIntegrity(){
+  const el=$("#integrityStatus");
+  if(!el)return;
+  const latest=latestStoredDate();
+  const gaps=detectLikelyGaps();
+  const dupCheck=draws.length-dedupeStrict(draws).length;
+  let msg=`Latest stored draw: ${latest}. ${draws.length} unique rows in local database. `;
+  msg+=dupCheck?`${dupCheck} duplicate rows detected. `:"No duplicate rows detected. ";
+  msg+=gaps.count?`${gaps.count} possible historical date gaps detected in the recent archive.`:"No obvious recent date gaps detected.";
+  el.textContent=msg;
+}
+
 async function switchGame(key){
   // UI changes immediately; network work never blocks the game button.
   activeGame=key;
@@ -689,6 +782,7 @@ async function switchGame(key){
   summary();
   renderStats(activeStat);
   $("#importStatus").textContent=`${GAMES[key].name}: ${draws.length} draws stored locally.`;
+  renderIntegrity();
 
   const mainStatus=$("#dataStatusMain");
   if(mainStatus){
@@ -705,8 +799,14 @@ async function switchGame(key){
 }
 
 async function refreshData(){
-  $("#updateStatus").textContent=`Checking ${GAMES[activeGame].name} updates…`;
+  $("#updateStatus").textContent=`Checking ${GAMES[activeGame].name} updates and archive integrity…`;
   await backgroundRefreshGame(activeGame,true);
+  const gaps=detectLikelyGaps();
+  $("#updateStatus").textContent=
+    `${GAMES[activeGame].name}: ${draws.length} draws · latest ${latestStoredDate()} · `+
+    (gaps.count?`${gaps.count} possible recent gap(s) detected.`:"no obvious recent gaps detected.");
+  updateFreshnessStatus();
+  renderIntegrity();
 }
 
 async function importCsv(){
@@ -739,6 +839,7 @@ $$(".bottom-nav button").forEach(b=>b.onclick=()=>{
   $$(".bottom-nav button").forEach(x=>x.classList.remove("active"));b.classList.add("active");
   $$(".screen").forEach(x=>x.classList.remove("active"));$("#"+b.dataset.screen).classList.add("active");
   if(b.dataset.screen==="historyScreen")renderHistory();
+  if(b.dataset.screen==="settingsScreen")renderIntegrity();
 });
 
 if("serviceWorker" in navigator){
