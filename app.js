@@ -1,7 +1,7 @@
 
 const $ = s => document.querySelector(s);
 
-const APP_VERSION="12.0.0";
+const APP_VERSION="13.0.0";
 
 async function checkAppVersionInBackground(){
   try{
@@ -397,6 +397,7 @@ function sharingScore(line,cfg){
 
 function modelScore(line,a,cfg){
   const f=lineFeatures(line,cfg);
+
   let structure=100;
   structure-=Math.abs(f.odd-a.oddMode)*8;
   structure-=Math.abs(f.low-a.lowMode)*7;
@@ -409,24 +410,66 @@ function modelScore(line,a,cfg){
   const overdue=normZ(mean(line.map(n=>zFromArray(a.last,n))));
 
   let pairAvg=0,pairCount=0;
-  for(let i=0;i<line.length;i++)for(let j=i+1;j<line.length;j++){
-    pairAvg+=a.pairs[`${line[i]}-${line[j]}`]||0;pairCount++;
+  for(let i=0;i<line.length;i++){
+    for(let j=i+1;j<line.length;j++){
+      pairAvg += a.pairs[`${line[i]}-${line[j]}`] || 0;
+      pairCount++;
+    }
   }
   pairAvg=pairCount?pairAvg/pairCount:0;
   const pairStrength=normZ((pairAvg-a.pairMean)/a.pairStd);
+
   const sharing=sharingScore(line,cfg);
 
+  const weights={
+    historical:.20,
+    recent:.20,
+    overdue:.12,
+    pairStrength:.18,
+    structure:.22,
+    sharing:.08
+  };
+
   const score=
-    historical*.20+
-    recent*.20+
-    overdue*.12+
-    pairStrength*.18+
-    structure*.22+
-    sharing*.08;
+    historical*weights.historical+
+    recent*weights.recent+
+    overdue*weights.overdue+
+    pairStrength*weights.pairStrength+
+    structure*weights.structure+
+    sharing*weights.sharing;
 
-  return {score,historical,recent,overdue,pairStrength,structure,sharing,sum:f.sum};
+  const components={historical,recent,overdue,pairStrength,structure,sharing};
+  const ranked=Object.entries(components).sort((a,b)=>b[1]-a[1]);
+
+  const labelMap={
+    historical:"Long-term history",
+    recent:"Recent form",
+    overdue:"Overdue fit",
+    pairStrength:"Pair strength",
+    structure:"Draw structure",
+    sharing:"Low-sharing profile"
+  };
+
+  const reasons=[];
+  ranked.slice(0,3).forEach(([k,v])=>{
+    if(v>=60)reasons.push(`${labelMap[k]} is strong (${Math.round(v)}/100).`);
+  });
+
+  const weak=[...ranked].reverse().find(([k,v])=>v<45);
+  if(weak)reasons.push(`${labelMap[weak[0]]} is the main weak point (${Math.round(weak[1])}/100).`);
+
+  if(!reasons.length)reasons.push("The line scores consistently across the model without one dominant signal.");
+
+  return {
+    score:Math.max(0,Math.min(100,score)),
+    historical,recent,overdue,pairStrength,structure,sharing,
+    sum:f.sum,
+    odd:f.odd,
+    low:f.low,
+    weights,
+    reasons
+  };
 }
-
 function genericScore(line,strategy,a,cfg){
   if(strategy==="Edge AI")return modelScore(line,a,cfg);
   const m=modelScore(line,a,cfg);
@@ -505,42 +548,103 @@ function generateSmartLines(history,strategy,count,candidateCount=30000){
 }
 
 function confidenceFor(items){
-  if(!items.length||!items[0].detail)return null;
-  const avg=mean(items.map(x=>x.detail.score));
-  const spread=Math.sqrt(mean(items.map(x=>(x.detail.score-avg)**2)));
+  const valid=items.filter(x=>x.detail);
+  if(!valid.length)return null;
+
+  const avg=mean(valid.map(x=>x.detail.score));
+  const componentSpreads=valid.map(x=>{
+    const vals=[
+      x.detail.historical,x.detail.recent,x.detail.overdue,
+      x.detail.pairStrength,x.detail.structure,x.detail.sharing
+    ];
+    const m=mean(vals);
+    return Math.sqrt(mean(vals.map(v=>(v-m)**2)));
+  });
+  const avgSpread=mean(componentSpreads);
+
   let label="Moderate";
-  if(avg>=70&&spread<8)label="High";
-  if(avg<55)label="Low";
-  return {label,score:avg};
+  if(avg>=68 && avgSpread<=18)label="High";
+  if(avg<52 || avgSpread>28)label="Low";
+
+  return {label,score:avg,agreement:Math.max(0,Math.min(100,100-avgSpread*2.5))};
+}
+function scoreBar(label,value){
+  const v=Math.max(0,Math.min(100,Math.round(value)));
+  return `
+    <div class="score-row">
+      <div class="score-label"><span>${label}</span><b>${v}</b></div>
+      <div class="score-track"><i style="width:${v}%"></i></div>
+    </div>`;
 }
 
 function renderPicks(items){
-  $("#results").innerHTML=items.map((x,i)=>`
+  $("#results").innerHTML=items.map((x,i)=>{
+    const d=x.detail;
+    return `
     <div class="ticket">
       <div class="ticket-head">
         <strong>Line ${i+1}</strong>
-        <span class="pill">${x.detail?`Edge ${Math.round(x.detail.score)}/100`:"Random"}</span>
+        <span class="pill">${d?`Edge ${Math.round(d.score)}/100`:"Random"}</span>
       </div>
+
       <div class="balls">${x.line.map(n=>`<span class="ball">${n}</span>`).join("")}</div>
-      ${x.stars?.length?`<div class="ticket-meta" style="font-size:13px"><b>Lucky Stars</b>&nbsp; ⭐ ${x.stars.join(" &nbsp; ⭐ ")}</div>`:""}
-      ${x.detail?`
-        <div class="model-grid">
-          <div class="model-chip"><b>${Math.round(x.detail.historical)}</b><small>History</small></div>
-          <div class="model-chip"><b>${Math.round(x.detail.recent)}</b><small>Recent</small></div>
-          <div class="model-chip"><b>${Math.round(x.detail.pairStrength)}</b><small>Pairs</small></div>
-          <div class="model-chip"><b>${Math.round(x.detail.overdue)}</b><small>Overdue</small></div>
-          <div class="model-chip"><b>${Math.round(x.detail.structure)}</b><small>Structure</small></div>
-          <div class="model-chip"><b>${Math.round(x.detail.sharing)}</b><small>Low-sharing</small></div>
+
+      ${x.stars?.length?`
+        <div class="ticket-meta" style="font-size:13px">
+          <b>Lucky Stars</b>&nbsp; ⭐ ${x.stars.join(" &nbsp; ⭐ ")}
         </div>`:""}
-    </div>`).join("");
+
+      ${d?`
+        <button class="why-btn" data-target="why-${i}">
+          Why this line?
+        </button>
+
+        <div id="why-${i}" class="why-panel hidden">
+          <div class="edge-summary">
+            <div><b>${Math.round(d.score)}</b><small>Edge score</small></div>
+            <div><b>${d.sum}</b><small>Number sum</small></div>
+            <div><b>${d.odd}/${x.line.length-d.odd}</b><small>Odd / even</small></div>
+          </div>
+
+          ${scoreBar("Long-term history",d.historical)}
+          ${scoreBar("Recent form",d.recent)}
+          ${scoreBar("Pair strength",d.pairStrength)}
+          ${scoreBar("Overdue fit",d.overdue)}
+          ${scoreBar("Draw structure",d.structure)}
+          ${scoreBar("Low-sharing profile",d.sharing)}
+
+          <div class="why-copy">
+            ${d.reasons.map(r=>`<p>${r}</p>`).join("")}
+          </div>
+
+          <div class="weight-note">
+            Model weights: history 20% · recent 20% · pairs 18% · structure 22% ·
+            overdue 12% · low-sharing 8%.
+          </div>
+        </div>`:""}
+    </div>`;
+  }).join("");
+
+  $$(".why-btn").forEach(btn=>btn.onclick=()=>{
+    const panel=$("#"+btn.dataset.target);
+    panel.classList.toggle("hidden");
+    btn.textContent=panel.classList.contains("hidden")?"Why this line?":"Hide explanation";
+  });
 
   const c=confidenceFor(items);
   if(c){
     $("#confidenceCard").classList.remove("hidden");
-    $("#confidenceCard").innerHTML=`<strong>Model agreement: ${c.label}</strong><div class="muted">Average Edge score ${c.score.toFixed(1)}/100 across this ticket.</div>`;
-  }else $("#confidenceCard").classList.add("hidden");
+    $("#confidenceCard").innerHTML=`
+      <strong>Model confidence: ${c.label}</strong>
+      <div class="muted">
+        Average Edge score ${c.score.toFixed(1)}/100 ·
+        model agreement ${c.agreement.toFixed(0)}/100.
+      </div>
+      <div class="progress"><i style="width:${c.agreement}%"></i></div>`;
+  }else{
+    $("#confidenceCard").classList.add("hidden");
+  }
 }
-
 function generate(){
   const strategy=$("#strategy").value;
   const n=strategy==="Edge AI"?30000:9000;

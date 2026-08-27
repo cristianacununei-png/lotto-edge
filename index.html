@@ -7,9 +7,9 @@
   <meta name="apple-mobile-web-app-capable" content="yes"/>
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent"/>
   <meta name="apple-mobile-web-app-title" content="Lotto Edge"/>
-  <link rel="manifest" href="manifest.webmanifest?v=12"/>
+  <link rel="manifest" href="manifest.webmanifest?v=13"/>
   <link rel="apple-touch-icon" href="icon-192.png"/>
-  <link rel="stylesheet" href="app.css?v=12"/>
+  <link rel="stylesheet" href="app.css?v=13"/>
   <title>Lotto Edge</title>
 </head>
 <body>
@@ -62,6 +62,9 @@
       <div id="dataStatusMain" class="status"></div>
 
       <div id="confidenceCard" class="confidence-card hidden"></div>
+      <div id="modelLegend" class="model-legend">
+        Edge AI score = weighted historical fit, not mathematical win probability.
+      </div>
       <section id="results"></section>
 
       <p class="legal">
@@ -144,6 +147,6 @@
     <button data-screen="settingsScreen"><b>⚙️</b><span>Settings</span></button>
   </nav>
 </div>
-<script src="app.js?v=12"></script>
+<script src="app.js?v=13"></script>
 </body>
 </html>

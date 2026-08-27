@@ -1,10 +1,10 @@
-const CACHE="lotto-edge-v12";
+const CACHE="lotto-edge-v13";
 const CORE=[
   "./",
   "index.html",
-  "app.css?v=12",
-  "app.js?v=12",
-  "manifest.webmanifest?v=12",
+  "app.css?v=13",
+  "app.js?v=13",
+  "manifest.webmanifest?v=13",
   "icon-192.png",
   "icon-512.png",
   "euromillions_history.csv"

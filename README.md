@@ -114,3 +114,22 @@ There is no forced reload loop and no need to manually clear site data during no
 
 Lottery-history refreshes are deferred until after the interface has rendered, so remote APIs
 cannot delay initial app startup.
+
+
+## v13 — Explainable Edge AI
+
+Each generated line now exposes the model components behind its Edge score:
+
+- long-term historical frequency
+- recent form
+- historical pair strength
+- overdue fit
+- draw-structure fit
+- low-sharing profile
+
+Each line has a tap-to-expand "Why this line?" panel, including the strongest and weakest
+signals. The confidence card now measures both average line score and agreement between the
+different model components.
+
+The score is explicitly presented as a weighted model ranking, not as the mathematical
+probability that the line will win.
