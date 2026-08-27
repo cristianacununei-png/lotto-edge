@@ -7,9 +7,9 @@
   <meta name="apple-mobile-web-app-capable" content="yes"/>
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent"/>
   <meta name="apple-mobile-web-app-title" content="Lotto Edge"/>
-  <link rel="manifest" href="manifest.webmanifest?v=14"/>
+  <link rel="manifest" href="manifest.webmanifest?v=15"/>
   <link rel="apple-touch-icon" href="icon-192.png"/>
-  <link rel="stylesheet" href="app.css?v=14"/>
+  <link rel="stylesheet" href="app.css?v=15"/>
   <title>Lotto Edge</title>
 </head>
 <body>
@@ -103,6 +103,7 @@
           <option value="200">200 draws</option>
         </select>
         <button id="runBacktest" class="generate mini">RUN BACKTEST</button>
+        <button id="calibrateModel" class="secondary wide">CALIBRATE EDGE AI WEIGHTS</button>
         <div id="backtestStatus" class="status"></div>
       </div>
       <div id="backtestResults"></div>
@@ -135,6 +136,7 @@
           Edge AI combines long-term frequency, recent trend, overdue behaviour, pair strength,
           draw structure and ticket diversification. EuroMillions Lucky Stars are modelled separately.
         </p>
+        <p id="weightStatus" class="muted"></p>
       </div>
     </section>
   </main>
@@ -147,6 +149,6 @@
     <button data-screen="settingsScreen"><b>⚙️</b><span>Settings</span></button>
   </nav>
 </div>
-<script src="app.js?v=14"></script>
+<script src="app.js?v=15"></script>
 </body>
 </html>

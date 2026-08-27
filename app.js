@@ -1,7 +1,7 @@
 
 const $ = s => document.querySelector(s);
 
-const APP_VERSION="14.0.0";
+const APP_VERSION="15.0.0";
 
 async function checkAppVersionInBackground(){
   try{
@@ -67,6 +67,29 @@ let activeGame=localStorage.getItem("lottoEdgeGame")||"lotto";
 let draws=[];
 let lineCount=5;
 let activeStat="hot";
+const DEFAULT_WEIGHTS={
+  historical:.20,
+  recent:.20,
+  overdue:.12,
+  pairStrength:.18,
+  structure:.22,
+  sharing:.08
+};
+
+function weightStorageKey(){
+  return `lottoEdgeWeights:${activeGame}`;
+}
+function getModelWeights(){
+  try{
+    const w=JSON.parse(localStorage.getItem(weightStorageKey())||"null");
+    if(w && Object.keys(DEFAULT_WEIGHTS).every(k=>Number.isFinite(w[k])))return w;
+  }catch{}
+  return {...DEFAULT_WEIGHTS};
+}
+function saveModelWeights(w){
+  localStorage.setItem(weightStorageKey(),JSON.stringify(w));
+}
+
 let analysisCache={key:null,value:null};
 let backgroundLoads={lotto:false,euromillions:false};
 
@@ -421,14 +444,7 @@ function modelScore(line,a,cfg){
 
   const sharing=sharingScore(line,cfg);
 
-  const weights={
-    historical:.20,
-    recent:.20,
-    overdue:.12,
-    pairStrength:.18,
-    structure:.22,
-    sharing:.08
-  };
+  const weights=getModelWeights();
 
   const score=
     historical*weights.historical+
@@ -542,11 +558,10 @@ function portfolioMetrics(lines,cfg){
   const numberCoverage=maxUnique?uniqueNumbers/maxUnique:0;
   const pairCoverage=totalPairs?uniquePairs/totalPairs:0;
 
-  // Coverage score deliberately rewards pair diversity more than raw unique-number count.
-  let score=100*(.45*numberCoverage+.55*pairCoverage);
+  let score=100*(.42*numberCoverage+.58*pairCoverage);
   score-=repeatedNumbers*1.5;
-  score-=repeatedPairs*3.5;
-  score-=repeatedStarPairs*4;
+  score-=repeatedPairs*4.0;
+  score-=repeatedStarPairs*4.0;
   score=Math.max(0,Math.min(100,score));
 
   return {
@@ -555,43 +570,72 @@ function portfolioMetrics(lines,cfg){
   };
 }
 
-function candidatePortfolioValue(item,chosen,cfg){
-  // Raw line quality matters, but marginal portfolio value matters too.
-  let value=item.detail?.score||50;
-
-  if(!chosen.length)return value;
-
-  const chosenNums=new Map(),chosenPairs=new Map();
-  chosen.forEach(x=>{
-    x.line.forEach(n=>chosenNums.set(n,(chosenNums.get(n)||0)+1));
-    for(let i=0;i<x.line.length;i++)for(let j=i+1;j<x.line.length;j++){
-      const k=`${x.line[i]}-${x.line[j]}`;
-      chosenPairs.set(k,(chosenPairs.get(k)||0)+1);
+function ticketObjective(lines,cfg){
+  const pm=portfolioMetrics(lines,cfg);
+  const avgEdge=mean(lines.map(x=>x.detail?.score||50));
+  const minEdge=Math.min(...lines.map(x=>x.detail?.score||50));
+  const maxOverlap=(()=>{
+    let m=0;
+    for(let i=0;i<lines.length;i++)for(let j=i+1;j<lines.length;j++){
+      m=Math.max(m,lines[i].line.filter(n=>lines[j].line.includes(n)).length);
     }
-  });
+    return m;
+  })();
 
-  let newNums=0,reusedNums=0,reusedPairs=0;
-  item.line.forEach(n=>{
-    if(chosenNums.has(n))reusedNums+=chosenNums.get(n);
-    else newNums++;
-  });
+  // Whole-ticket score: line quality + coverage, with concentration penalties.
+  let total=
+    avgEdge*.54 +
+    pm.score*.38 +
+    minEdge*.08;
 
-  for(let i=0;i<item.line.length;i++)for(let j=i+1;j<item.line.length;j++){
-    const k=`${item.line[i]}-${item.line[j]}`;
-    if(chosenPairs.has(k))reusedPairs+=chosenPairs.get(k);
+  if(maxOverlap>=cfg.picks-1)total-=20;
+  else if(maxOverlap===cfg.picks-2)total-=7;
+
+  total-=pm.repeatedPairs*1.4;
+  total-=pm.repeatedStarPairs*1.5;
+
+  return {total,avgEdge,maxOverlap,...pm};
+}
+
+function cloneTicket(ticket){
+  return ticket.map(x=>({
+    line:[...x.line],
+    stars:[...(x.stars||[])],
+    detail:x.detail,
+    portfolioValue:x.portfolioValue
+  }));
+}
+
+function randomTicketFromPool(pool,count,cfg,a,strategy){
+  const picked=[],used=new Set(),usedStars=new Set();
+  let attempts=0;
+  while(picked.length<count && attempts++<500){
+    const item=pool[Math.floor(Math.random()*Math.min(pool.length,1200))];
+    if(!item)break;
+    const key=item.line.join(",");
+    if(used.has(key))continue;
+    used.add(key);
+    const copy={...item,line:[...item.line],stars:chooseStars(a,strategy,cfg,usedStars)};
+    if(copy.stars.length)usedStars.add(copy.stars.join("-"));
+    picked.push(copy);
   }
+  return picked;
+}
 
-  // Strong numbers are allowed to repeat, but whole-pair duplication is expensive.
-  value += newNums*2.2;
-  value -= reusedNums*1.6;
-  value -= reusedPairs*5.0;
-
-  // Avoid near-clones.
-  const maxOverlap=Math.max(...chosen.map(x=>item.line.filter(n=>x.line.includes(n)).length));
-  if(maxOverlap>=cfg.picks-1)value-=30;
-  else if(maxOverlap===cfg.picks-2)value-=12;
-
-  return value;
+function mutateTicket(ticket,pool,cfg,a,strategy){
+  const out=cloneTicket(ticket);
+  if(!out.length)return out;
+  const idx=Math.floor(Math.random()*out.length);
+  const used=new Set(out.filter((_,i)=>i!==idx).map(x=>x.line.join(",")));
+  for(let tries=0;tries<80;tries++){
+    const cand=pool[Math.floor(Math.random()*Math.min(pool.length,1500))];
+    if(!cand)continue;
+    const key=cand.line.join(",");
+    if(used.has(key))continue;
+    out[idx]={...cand,line:[...cand.line],stars:chooseStars(a,strategy,cfg,new Set(out.filter((_,i)=>i!==idx).map(x=>(x.stars||[]).join("-"))))};
+    break;
+  }
+  return out;
 }
 
 function generateSmartLines(history,strategy,count,candidateCount=30000){
@@ -604,6 +648,7 @@ function generateSmartLines(history,strategy,count,candidateCount=30000){
       detail:null
     }));
     randomLines.portfolio=portfolioMetrics(randomLines,cfg);
+    randomLines.globalScore=ticketObjective(randomLines,cfg);
     return randomLines;
   }
 
@@ -612,51 +657,57 @@ function generateSmartLines(history,strategy,count,candidateCount=30000){
     const line=sample(cfg.max,cfg.picks),k=line.join(",");
     if(seen.has(k))continue;
     seen.add(k);
-    pool.push({line,detail:genericScore(line,strategy,a,cfg)});
+    pool.push({line,detail:genericScore(line,strategy,a,cfg),stars:[]});
   }
-
-  // Keep a broad high-quality candidate pool; portfolio logic selects among it.
   pool.sort((x,y)=>y.detail.score-x.detail.score);
-  const shortlist=pool.slice(0,Math.min(2500,pool.length));
+  const shortlist=pool.slice(0,Math.min(2200,pool.length));
 
-  const chosen=[];
+  // Seed several complete tickets, then globally improve them.
+  const population=[];
+  const seeds=Math.max(24,Math.min(60,count*10));
+  for(let i=0;i<seeds;i++){
+    const t=randomTicketFromPool(shortlist,count,cfg,a,strategy);
+    if(t.length===count)population.push(t);
+  }
+
+  // Deterministic high-quality seed.
+  const deterministic=[];
   const usedStarPairs=new Set();
+  for(const item of shortlist){
+    if(deterministic.length===count)break;
+    const overlapOk=deterministic.every(x=>item.line.filter(n=>x.line.includes(n)).length<=cfg.picks-2);
+    if(!overlapOk)continue;
+    deterministic.push({...item,line:[...item.line],stars:chooseStars(a,strategy,cfg,usedStarPairs)});
+    if(deterministic.at(-1).stars.length)usedStarPairs.add(deterministic.at(-1).stars.join("-"));
+  }
+  if(deterministic.length===count)population.push(deterministic);
 
-  while(chosen.length<count && shortlist.length){
-    let bestIndex=0,bestValue=-Infinity;
+  let best=population[0]||deterministic;
+  let bestScore=ticketObjective(best,cfg).total;
 
-    for(let i=0;i<shortlist.length;i++){
-      const v=candidatePortfolioValue(shortlist[i],chosen,cfg);
-      if(v>bestValue){bestValue=v;bestIndex=i;}
+  // Simulated evolutionary hill-climb across complete tickets.
+  const iterations=count<=5?900:500;
+  for(let i=0;i<iterations;i++){
+    const base=population.length
+      ? population[Math.floor(Math.random()*population.length)]
+      : best;
+    const cand=mutateTicket(base,shortlist,cfg,a,strategy);
+    if(cand.length!==count)continue;
+    const obj=ticketObjective(cand,cfg);
+    if(obj.total>bestScore){
+      best=cand;
+      bestScore=obj.total;
     }
-
-    const item=shortlist.splice(bestIndex,1)[0];
-    item.portfolioValue=bestValue;
-
-    const stars=chooseStars(a,strategy,cfg,usedStarPairs);
-    item.stars=stars;
-    if(stars.length)usedStarPairs.add(stars.join("-"));
-
-    chosen.push(item);
-
-    // Remove very similar candidates after each choice to keep the search efficient.
-    for(let i=shortlist.length-1;i>=0;i--){
-      const overlap=shortlist[i].line.filter(n=>item.line.includes(n)).length;
-      if(overlap>=cfg.picks-1)shortlist.splice(i,1);
+    if(i%20===0 && population.length){
+      population.sort((x,y)=>ticketObjective(y,cfg).total-ticketObjective(x,cfg).total);
+      population.splice(Math.ceil(population.length*.7));
+      population.push(cloneTicket(best));
     }
   }
 
-  // Fallback if aggressive pruning prevented us filling the ticket.
-  while(chosen.length<count){
-    const item=pool.find(x=>!chosen.some(c=>c.line.join(",")===x.line.join(",")));
-    if(!item)break;
-    item.stars=chooseStars(a,strategy,cfg,usedStarPairs);
-    if(item.stars.length)usedStarPairs.add(item.stars.join("-"));
-    chosen.push(item);
-  }
-
-  chosen.portfolio=portfolioMetrics(chosen,cfg);
-  return chosen;
+  best.portfolio=portfolioMetrics(best,cfg);
+  best.globalScore=ticketObjective(best,cfg);
+  return best;
 }
 function confidenceFor(items){
   const valid=items.filter(x=>x.detail);
@@ -729,8 +780,12 @@ function renderPicks(items){
           </div>
 
           <div class="weight-note">
-            Model weights: history 20% · recent 20% · pairs 18% · structure 22% ·
-            overdue 12% · low-sharing 8%.
+            Model weights: history ${Math.round(d.weights.historical*100)}% ·
+            recent ${Math.round(d.weights.recent*100)}% ·
+            pairs ${Math.round(d.weights.pairStrength*100)}% ·
+            structure ${Math.round(d.weights.structure*100)}% ·
+            overdue ${Math.round(d.weights.overdue*100)}% ·
+            low-sharing ${Math.round(d.weights.sharing*100)}%.
           </div>
         </div>`:""}
     </div>`;
@@ -756,8 +811,8 @@ function renderPicks(items){
 
       <div class="portfolio-card">
         <div class="portfolio-head">
-          <b>Ticket coverage ${Math.round(p.score)}/100</b>
-          <span>${p.uniqueNumbers} unique numbers · ${p.uniquePairs} unique pairs</span>
+          <b>Global ticket score ${Math.round(items.globalScore?.total||p.score)}/100</b>
+          <span>Coverage ${Math.round(p.score)}/100 · ${p.uniqueNumbers} unique numbers · ${p.uniquePairs} unique pairs</span>
         </div>
         <div class="portfolio-grid">
           <div><b>${p.repeatedNumbers}</b><small>repeated number slots</small></div>
@@ -922,15 +977,78 @@ function renderHistory(){
 
 function matchCount(a,b){return a.filter(n=>b.includes(n)).length}
 
-function quickModelLine(history){
-  // Backtest uses 1800 candidates per test draw for mobile performance.
-  // Same factor model; fewer search candidates than live generation.
-  return generateSmartLines(history,"Edge AI",1,1800)[0];
+function quickModelLine(history,weightsOverride=null){
+  const saved=getModelWeights();
+  if(weightsOverride)saveModelWeights(weightsOverride);
+  const result=generateSmartLines(history,"Edge AI",1,900)[0];
+  if(weightsOverride)saveModelWeights(saved);
+  return result;
+}
+
+function weightCandidates(){
+  // Small, interpretable grid around the default model.
+  const sets=[
+    {...DEFAULT_WEIGHTS},
+    {historical:.16,recent:.28,overdue:.12,pairStrength:.16,structure:.20,sharing:.08},
+    {historical:.24,recent:.16,overdue:.10,pairStrength:.22,structure:.20,sharing:.08},
+    {historical:.18,recent:.18,overdue:.16,pairStrength:.20,structure:.20,sharing:.08},
+    {historical:.18,recent:.20,overdue:.10,pairStrength:.16,structure:.28,sharing:.08},
+    {historical:.22,recent:.22,overdue:.12,pairStrength:.18,structure:.18,sharing:.08}
+  ];
+  return sets;
+}
+
+async function evaluateWeights(weights,testCount=60){
+  const cfg=GAMES[activeGame];
+  const tests=Math.min(testCount,draws.length-80);
+  if(tests<=0)return {score:-Infinity,avg:0,two:0,three:0,four:0,five:0};
+
+  let matches=0,two=0,three=0,four=0,five=0,stars=0;
+  for(let t=0;t<tests;t++){
+    const target=draws[t];
+    const history=draws.slice(t+1);
+    const pick=quickModelLine(history,weights);
+    const m=matchCount(pick.line,target.numbers);
+    matches+=m;
+    if(m>=2)two++;if(m>=3)three++;if(m>=4)four++;if(m>=5)five++;
+    if(cfg.stars)stars+=matchCount(pick.stars||[],target.stars||[]);
+    if(t%8===0)await new Promise(r=>setTimeout(r,0));
+  }
+  const avg=matches/tests;
+  // Weighted evaluation favours rarer higher-match events.
+  const score=avg + two*.004 + three*.02 + four*.10 + five*.50 + stars*.003;
+  return {score,avg,two,three,four,five,stars,tests};
+}
+
+async function calibrateWeights(){
+  if(draws.length<120){
+    $("#backtestStatus").textContent="Not enough history to calibrate this game.";
+    return;
+  }
+  const button=$("#calibrateModel");
+  button.disabled=true;
+  $("#backtestStatus").textContent="Calibrating model weights with walk-forward validation…";
+
+  const sets=weightCandidates();
+  let best=null;
+  for(let i=0;i<sets.length;i++){
+    $("#backtestStatus").textContent=`Calibration ${i+1}/${sets.length}…`;
+    const res=await evaluateWeights(sets[i],60);
+    if(!best || res.score>best.res.score)best={weights:sets[i],res};
+  }
+
+  saveModelWeights(best.weights);
+  $("#backtestStatus").textContent=
+    `Calibration complete. Best historical average ${best.res.avg.toFixed(3)} main matches over ${best.res.tests} draws. New weights saved for ${GAMES[activeGame].name}.`;
+  button.disabled=false;
 }
 
 async function runBacktest(){
   const requested=Number($("#testSize").value);
-  if(draws.length<80){$("#backtestStatus").textContent="Not enough history for a useful backtest.";return}
+  if(draws.length<80){
+    $("#backtestStatus").textContent="Not enough history for a useful backtest.";
+    return;
+  }
 
   const tests=Math.min(requested,draws.length-60);
   $("#backtestStatus").textContent=`Running ${tests} walk-forward tests…`;
@@ -940,11 +1058,9 @@ async function runBacktest(){
   const edge={matches:0,starMatches:0,two:0,three:0,four:0,five:0};
   const rnd={matches:0,starMatches:0,two:0,three:0,four:0,five:0};
 
-  // draws are newest-first. Test historical targets while using only older draws.
   for(let t=0;t<tests;t++){
-    const targetIndex=t;
-    const target=draws[targetIndex];
-    const history=draws.slice(targetIndex+1);
+    const target=draws[t];
+    const history=draws.slice(t+1);
     if(history.length<60)break;
 
     const edgePick=quickModelLine(history);
@@ -965,6 +1081,7 @@ async function runBacktest(){
 
   const avgE=edge.matches/tests,avgR=rnd.matches/tests;
   const delta=avgE-avgR;
+  const relative=avgR?((avgE-avgR)/avgR*100):0;
   let interpretation="No clear historical advantage over random in this sample.";
   if(delta>0.08)interpretation="Edge AI produced a higher historical average in this sample.";
   if(delta<-0.08)interpretation="Random performed better in this sample.";
@@ -974,6 +1091,8 @@ async function runBacktest(){
     <div class="bt-grid">
       <div class="bt-card"><b>${avgE.toFixed(3)}</b><small>Edge AI avg main matches</small></div>
       <div class="bt-card"><b>${avgR.toFixed(3)}</b><small>Random avg main matches</small></div>
+      <div class="bt-card"><b>${relative>=0?"+":""}${relative.toFixed(1)}%</b><small>relative difference</small></div>
+      <div class="bt-card"><b>${tests}</b><small>walk-forward draws tested</small></div>
     </div>
     <table class="bt-table">
       <tr><th>Result</th><th>Edge AI</th><th>Random</th></tr>
@@ -983,22 +1102,11 @@ async function runBacktest(){
       <tr><td>5 main matches</td><td>${edge.five}</td><td>${rnd.five}</td></tr>
       ${cfg.stars?`<tr><td>Total Lucky Star matches</td><td>${edge.starMatches}</td><td>${rnd.starMatches}</td></tr>`:""}
     </table>
-    <div class="settings-card" style="margin-top:12px"><b>${interpretation}</b><p class="muted">This is descriptive historical testing, not evidence that future random draws are predictable.</p></div>`;
+    <div class="settings-card" style="margin-top:12px">
+      <b>${interpretation}</b>
+      <p class="muted">This remains descriptive historical testing. It does not establish that future random draws are predictable.</p>
+    </div>`;
 }
-
-
-function renderIntegrity(){
-  const el=$("#integrityStatus");
-  if(!el)return;
-  const latest=latestStoredDate();
-  const gaps=detectLikelyGaps();
-  const dupCheck=draws.length-dedupeStrict(draws).length;
-  let msg=`Latest stored draw: ${latest}. ${draws.length} unique rows in local database. `;
-  msg+=dupCheck?`${dupCheck} duplicate rows detected. `:"No duplicate rows detected. ";
-  msg+=gaps.count?`${gaps.count} possible historical date gaps detected in the recent archive.`:"No obvious recent date gaps detected.";
-  el.textContent=msg;
-}
-
 async function switchGame(key){
   // UI changes immediately; network work never blocks the game button.
   activeGame=key;
@@ -1014,6 +1122,7 @@ async function switchGame(key){
   summary();
   renderStats(activeStat);
   $("#importStatus").textContent=`${GAMES[key].name}: ${draws.length} draws stored locally.`;
+  renderWeightStatus();
   renderIntegrity();
 
   const mainStatus=$("#dataStatusMain");
@@ -1060,6 +1169,7 @@ $("#lottoGame").onclick=()=>switchGame("lotto");
 $("#euroGame").onclick=()=>switchGame("euromillions");
 $("#refreshBtn").onclick=refreshData;
 $("#runBacktest").onclick=runBacktest;
+$("#calibrateModel").onclick=calibrateWeights;
 $("#importBtn").onclick=importCsv;
 $("#clearHistory").onclick=()=>{localStorage.removeItem("lottoEdgeHistory");renderHistory()};
 
@@ -1071,7 +1181,7 @@ $$(".bottom-nav button").forEach(b=>b.onclick=()=>{
   $$(".bottom-nav button").forEach(x=>x.classList.remove("active"));b.classList.add("active");
   $$(".screen").forEach(x=>x.classList.remove("active"));$("#"+b.dataset.screen).classList.add("active");
   if(b.dataset.screen==="historyScreen")renderHistory();
-  if(b.dataset.screen==="settingsScreen")renderIntegrity();
+  if(b.dataset.screen==="settingsScreen"){renderIntegrity();renderWeightStatus();}
 });
 
 if("serviceWorker" in navigator){

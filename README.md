@@ -157,3 +157,22 @@ Strong numbers are still allowed to repeat if their model value justifies it.
 
 The confidence card now includes Ticket Coverage, unique-number count, unique-pair count,
 repeated-number slots, repeated pairs and repeated Lucky Star pairs.
+
+
+## v15 — Global ticket optimisation + calibration
+
+v15 replaces the greedy ticket builder with a global portfolio search.
+
+The engine:
+1. generates a broad high-quality candidate pool;
+2. seeds many complete tickets;
+3. scores each complete ticket for average Edge quality, minimum line quality, number coverage,
+   pair coverage, repeated-pair concentration and near-clone risk;
+4. uses evolutionary hill-climbing to improve the full ticket rather than selecting lines one-by-one.
+
+v15 also adds model calibration. The Backtest screen can evaluate several interpretable weight
+sets using walk-forward validation and save the best-performing weight set separately for Lotto
+and EuroMillions.
+
+Backtesting and calibration remain descriptive historical tools; they do not establish that
+future random lottery draws can be predicted.
