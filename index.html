@@ -16,7 +16,7 @@
 <div class="app-shell">
   <header class="topbar">
     <div>
-      <div class="eyebrow">UK LOTTO · 6 / 59</div>
+      <div class="eyebrow" id="gameLabel">UK LOTTO · 6 / 59</div>
       <h1>Lotto Edge</h1>
     </div>
     <button id="installBtn" class="icon-btn hidden" aria-label="Install app">＋</button>
@@ -25,6 +25,11 @@
   <main>
     <section id="pickScreen" class="screen active">
       <div class="hero-card">
+        <span class="label">Game</span>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-bottom:14px">
+          <button id="lottoGame" class="secondary" style="min-height:44px">Lotto</button>
+          <button id="euroGame" class="secondary" style="min-height:44px">EuroMillions</button>
+        </div>
         <div class="hero-top">
           <div>
             <span class="label">Strategy</span>
@@ -53,7 +58,7 @@
         <div><span id="overdueNumber">—</span><small>overdue</small></div>
       </div>
 
-      <section id="results"></section>
+      <section id="results"></section><div id="euroNote" class="status"></div>
       <p class="legal">Every valid line has the same mathematical probability in a fair draw. Strategy scores are analytical rankings, not win probabilities.</p>
     </section>
 

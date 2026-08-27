@@ -2,186 +2,394 @@
 const $ = s => document.querySelector(s);
 const $$ = s => [...document.querySelectorAll(s)];
 
-let draws = [];
-let lineCount = 5;
-let deferredPrompt = null;
+const EURO_REMOTE =
+  "https://raw.githubusercontent.com/daowa89/lottery-archive/main/eu/euromillions/results.csv";
 
-const DEFAULT_DRAWS = [
-  {date:"2026-08-15",numbers:[17,27,28,42,47,59]},
-  {date:"2026-08-12",numbers:[3,14,22,24,34,54]},
-  {date:"2026-08-08",numbers:[14,18,26,45,50,53]},
-  {date:"2026-08-05",numbers:[24,26,27,39,47,50]},
-  {date:"2026-08-01",numbers:[16,19,32,33,34,44]}
+const GAMES = {
+  lotto: {
+    name: "Lotto",
+    label: "UK LOTTO · 6 / 59",
+    max: 59,
+    picks: 6,
+    stars: 0,
+    starMax: 0,
+    storage: "lottoEdgeDraws",
+    bundled: null
+  },
+  euromillions: {
+    name: "EuroMillions",
+    label: "EUROMILLIONS · 5 / 50 + 2 / 12",
+    max: 50,
+    picks: 5,
+    stars: 2,
+    starMax: 12,
+    storage: "lottoEdgeEuroDraws",
+    bundled: "euromillions_history.csv"
+  }
+};
+
+const LOTTO_DEMO = [
+  {date:"2026-08-15",numbers:[17,27,28,42,47,59],stars:[]},
+  {date:"2026-08-12",numbers:[3,14,22,24,34,54],stars:[]},
+  {date:"2026-08-08",numbers:[14,18,26,45,50,53],stars:[]},
+  {date:"2026-08-05",numbers:[24,26,27,39,47,50],stars:[]},
+  {date:"2026-08-01",numbers:[16,19,32,33,34,44],stars:[]}
 ];
 
 const descriptions = {
-  "Balanced":"Typical historical structure + lower-sharing-risk patterns.",
-  "Low sharing risk":"Avoids birthdays, obvious sequences and common human patterns.",
-  "Hot numbers":"Weights numbers that appeared more often historically.",
-  "Overdue numbers":"Weights numbers absent for longer periods.",
+  "Balanced":"Uses historically typical structure while avoiding overly human-looking combinations.",
+  "Low sharing risk":"Avoids birthday-heavy, sequential and other common human-picking patterns.",
+  "Hot numbers":"Favours numbers that have appeared more often historically.",
+  "Overdue numbers":"Favours numbers that have gone longer since appearing.",
   "Pure random":"No historical weighting. A clean random baseline."
 };
 
-function saveDraws(){
-  localStorage.setItem("lottoEdgeDraws", JSON.stringify(draws));
-}
-function loadLocalDraws(){
-  const saved = localStorage.getItem("lottoEdgeDraws");
-  if(saved){
-    try{ draws = JSON.parse(saved) || []; }catch(e){ draws=[]; }
-  }
-  if(!draws.length){ draws = DEFAULT_DRAWS; saveDraws(); }
-}
-function saveHistory(items){
-  const old = JSON.parse(localStorage.getItem("lottoEdgeHistory") || "[]");
-  localStorage.setItem("lottoEdgeHistory", JSON.stringify([...items,...old].slice(0,100)));
-}
-function getHistory(){ return JSON.parse(localStorage.getItem("lottoEdgeHistory") || "[]"); }
+let activeGame = localStorage.getItem("lottoEdgeGame") || "lotto";
+let lineCount = 5;
+let draws = [];
+let deferredPrompt = null;
 
-function dedupeAndSort(items){
-  const seen = new Set(), out = [];
+function parseCsv(text, gameKey) {
+  const cfg = GAMES[gameKey];
+  const lines = text.replace(/\r/g,"").split("\n").filter(x => x.trim());
+  if (lines.length < 2) return [];
+
+  const parseLine = line => {
+    const out=[]; let cur="", quoted=false;
+    for (let i=0;i<line.length;i++) {
+      const ch=line[i];
+      if (ch === '"') {
+        if (quoted && line[i+1] === '"') {cur+='"';i++;}
+        else quoted=!quoted;
+      } else if (ch === "," && !quoted) {
+        out.push(cur.trim()); cur="";
+      } else cur+=ch;
+    }
+    out.push(cur.trim());
+    return out;
+  };
+
+  const headers=parseLine(lines[0]).map(h=>h.toLowerCase().replace(/[_-]/g," ").trim());
+  const find = aliases => headers.findIndex(h=>aliases.includes(h));
+
+  const numberIdx=[];
+  for(let i=1;i<=cfg.picks;i++){
+    numberIdx.push(find([`n${i}`,`ball ${i}`,`ball${i}`,`number ${i}`,`number${i}`]));
+  }
+  if(numberIdx.some(i=>i<0)) return [];
+
+  const dateIdx=find(["date","draw date","drawdate"]);
+  const starIdx=[];
+  if(cfg.stars){
+    for(let i=1;i<=cfg.stars;i++){
+      starIdx.push(find([
+        `s${i}`,`star ${i}`,`star${i}`,
+        `lucky star ${i}`,`luckystar${i}`
+      ]));
+    }
+  }
+
+  const out=[];
+  for(let r=1;r<lines.length;r++){
+    const vals=parseLine(lines[r]);
+    const nums=numberIdx.map(i=>Number(vals[i]));
+    if(nums.length!==cfg.picks ||
+       nums.some(n=>!Number.isInteger(n)||n<1||n>cfg.max) ||
+       new Set(nums).size!==cfg.picks) continue;
+
+    const stars=starIdx.map(i=>i>=0?Number(vals[i]):NaN)
+      .filter(n=>Number.isInteger(n)&&n>=1&&n<=cfg.starMax);
+
+    if(cfg.stars && stars.length!==cfg.stars) continue;
+
+    out.push({
+      date: dateIdx>=0 ? vals[dateIdx] : "",
+      numbers: nums.sort((a,b)=>a-b),
+      stars: stars.sort((a,b)=>a-b)
+    });
+  }
+  return out;
+}
+
+function dedupeSort(items){
+  const seen=new Set(), out=[];
   for(const d of items){
-    if(!d || !Array.isArray(d.numbers) || d.numbers.length!==6) continue;
-    const nums = [...new Set(d.numbers.map(Number))].sort((a,b)=>a-b);
-    if(nums.length!==6 || nums.some(n=>n<1||n>59)) continue;
-    const key = `${d.date||""}|${nums.join(",")}`;
+    const key=`${d.date||""}|${d.numbers.join(",")}|${(d.stars||[]).join(",")}`;
     if(seen.has(key)) continue;
-    seen.add(key);
-    out.push({date:d.date||"",numbers:nums,bonus:d.bonus??null});
+    seen.add(key); out.push(d);
   }
   out.sort((a,b)=>String(b.date).localeCompare(String(a.date)));
   return out;
 }
 
-function counts(){
-  const freq = Array(60).fill(0), last = Array(60).fill(draws.length);
-  const pairs = {};
+function saveGameDraws(gameKey, items){
+  localStorage.setItem(GAMES[gameKey].storage, JSON.stringify(items));
+}
+
+function loadStored(gameKey){
+  try{
+    return JSON.parse(localStorage.getItem(GAMES[gameKey].storage)||"[]") || [];
+  }catch{return []}
+}
+
+async function ensureGameData(gameKey){
+  if(gameKey==="lotto"){
+    let d=loadStored("lotto");
+    if(!d.length){ d=LOTTO_DEMO; saveGameDraws("lotto",d); }
+    return d;
+  }
+
+  let d=loadStored("euromillions");
+  if(!d.length){
+    try{
+      const r=await fetch("euromillions_history.csv",{cache:"no-store"});
+      if(r.ok){
+        d=parseCsv(await r.text(),"euromillions");
+        if(d.length) saveGameDraws("euromillions",d);
+      }
+    }catch{}
+  }
+  return d;
+}
+
+function makeCounts(){
+  const cfg=GAMES[activeGame];
+  const freq=Array(cfg.max+1).fill(0);
+  const last=Array(cfg.max+1).fill(draws.length);
+  const pairs={};
+  const starFreq=Array((cfg.starMax||0)+1).fill(0);
+  const starLast=Array((cfg.starMax||0)+1).fill(draws.length);
+
   draws.forEach((d,idx)=>{
-    d.numbers.forEach(n=>{freq[n]++; if(last[n]===draws.length) last[n]=idx;});
-    for(let i=0;i<6;i++)for(let j=i+1;j<6;j++){
-      const k=`${d.numbers[i]}-${d.numbers[j]}`;
-      pairs[k]=(pairs[k]||0)+1;
+    d.numbers.forEach(n=>{
+      freq[n]++;
+      if(last[n]===draws.length) last[n]=idx;
+    });
+    for(let i=0;i<d.numbers.length;i++){
+      for(let j=i+1;j<d.numbers.length;j++){
+        const k=`${d.numbers[i]}-${d.numbers[j]}`;
+        pairs[k]=(pairs[k]||0)+1;
+      }
     }
+    (d.stars||[]).forEach(s=>{
+      starFreq[s]++;
+      if(starLast[s]===draws.length) starLast[s]=idx;
+    });
   });
-  return {freq,last,pairs};
+
+  return {freq,last,pairs,starFreq,starLast};
 }
-function drawStats(){
-  const c=counts();
-  const flat=draws.map(d=>d.numbers);
-  const sums=flat.map(a=>a.reduce((x,y)=>x+y,0));
-  const odds=flat.map(a=>a.filter(n=>n%2).length);
-  const lows=flat.map(a=>a.filter(n=>n<=29).length);
+
+function mode(arr, fallback){
+  const m={}; arr.forEach(n=>m[n]=(m[n]||0)+1);
+  const sorted=Object.entries(m).sort((a,b)=>b[1]-a[1]);
+  return sorted.length ? Number(sorted[0][0]) : fallback;
+}
+
+function analysis(){
+  const cfg=GAMES[activeGame], c=makeCounts();
+  const sums=draws.map(d=>d.numbers.reduce((a,b)=>a+b,0));
+  const odds=draws.map(d=>d.numbers.filter(n=>n%2).length);
+  const lows=draws.map(d=>d.numbers.filter(n=>n<=cfg.max/2).length);
   const mean=a=>a.length?a.reduce((x,y)=>x+y,0)/a.length:0;
-  const mode=a=>{
-    const x=Object.entries(a.reduce((o,n)=>(o[n]=(o[n]||0)+1,o),{})).sort((p,q)=>q[1]-p[1]);
-    return x.length ? +x[0][0] : 3;
-  };
   const sm=mean(sums);
-  const ss=Math.sqrt(mean(sums.map(x=>(x-sm)**2)))||1;
-  return {...c,sumMean:sm,sumStd:ss,oddMode:mode(odds),lowMode:mode(lows)};
+  const sd=Math.sqrt(mean(sums.map(x=>(x-sm)**2)))||1;
+  return {
+    ...c,
+    sumMean:sm,
+    sumStd:sd,
+    oddMode:mode(odds,Math.floor(cfg.picks/2)),
+    lowMode:mode(lows,Math.floor(cfg.picks/2))
+  };
 }
-function zscore(arr,n){
-  const vals=arr.slice(1), m=vals.reduce((a,b)=>a+b,0)/vals.length;
-  const sd=Math.sqrt(vals.reduce((s,x)=>s+(x-m)**2,0)/vals.length)||1;
-  return (arr[n]-m)/sd;
+
+function zScore(arr,n){
+  const vals=arr.slice(1);
+  if(!vals.length) return 0;
+  const mean=vals.reduce((a,b)=>a+b,0)/vals.length;
+  const sd=Math.sqrt(vals.reduce((s,x)=>s+(x-mean)**2,0)/vals.length)||1;
+  return (arr[n]-mean)/sd;
 }
-function sample6(){
-  const pool=Array.from({length:59},(_,i)=>i+1), out=[];
-  for(let i=0;i<6;i++){
-    const j=Math.floor(Math.random()*pool.length);
-    out.push(pool.splice(j,1)[0]);
+
+function sample(max,k){
+  const pool=Array.from({length:max},(_,i)=>i+1), out=[];
+  for(let i=0;i<k;i++){
+    out.push(pool.splice(Math.floor(Math.random()*pool.length),1)[0]);
   }
   return out.sort((a,b)=>a-b);
 }
+
 function features(line){
-  const odd=line.filter(n=>n%2).length, low=line.filter(n=>n<=29).length;
-  let consecutive=0,sameLast=0;
-  for(let i=0;i<5;i++) if(line[i+1]===line[i]+1) consecutive++;
-  for(let i=0;i<6;i++)for(let j=i+1;j<6;j++) if(line[i]%10===line[j]%10) sameLast++;
+  const cfg=GAMES[activeGame];
+  const odd=line.filter(n=>n%2).length;
+  const low=line.filter(n=>n<=cfg.max/2).length;
   const birthday=line.filter(n=>n<=31).length;
+  let consecutive=0,sameLast=0;
+  for(let i=0;i<line.length-1;i++) if(line[i+1]===line[i]+1) consecutive++;
+  for(let i=0;i<line.length;i++)
+    for(let j=i+1;j<line.length;j++)
+      if(line[i]%10===line[j]%10) sameLast++;
   const diffs=line.slice(1).map((n,i)=>n-line[i]);
-  const dc={};diffs.forEach(d=>dc[d]=(dc[d]||0)+1);
-  const repeatedGap=Math.max(0,...Object.values(dc));
-  return {odd,low,sum:line.reduce((a,b)=>a+b,0),consecutive,sameLast,birthday,repeatedGap};
+  const d={}; diffs.forEach(x=>d[x]=(d[x]||0)+1);
+  const repeatedGap=Math.max(0,...Object.values(d));
+  return {
+    odd,low,birthday,consecutive,sameLast,repeatedGap,
+    sum:line.reduce((a,b)=>a+b,0)
+  };
 }
-function sharing(line){
-  const f=features(line);let p=0;
-  p+=Math.max(0,f.birthday-2)*10;
-  p+=f.consecutive*12;
-  p+=Math.max(0,f.sameLast-1)*4;
-  p+=Math.max(0,f.repeatedGap-2)*7;
-  return Math.max(0,Math.min(100,100-p));
-}
-function score(line,strategy,s){
+
+function lowSharing(line){
   const f=features(line);
-  let balance=100-Math.abs(f.odd-s.oddMode)*8-Math.abs(f.low-s.lowMode)*7;
+  let penalty=0;
+  penalty+=Math.max(0,f.birthday-2)*10;
+  penalty+=f.consecutive*12;
+  penalty+=Math.max(0,f.sameLast-1)*4;
+  penalty+=Math.max(0,f.repeatedGap-2)*7;
+  return Math.max(0,Math.min(100,100-penalty));
+}
+
+function scoreLine(line,strategy,s){
+  const f=features(line);
+  let balance=100;
+  balance-=Math.abs(f.odd-s.oddMode)*8;
+  balance-=Math.abs(f.low-s.lowMode)*7;
   balance-=Math.min(30,Math.abs(f.sum-s.sumMean)/s.sumStd*10);
   balance-=f.consecutive*4;
   balance=Math.max(0,Math.min(100,balance));
-  const share=sharing(line);
-  const hot=line.reduce((a,n)=>a+zscore(s.freq,n),0)/6;
-  const due=line.reduce((a,n)=>a+zscore(s.last,n),0)/6;
-  let sc=50;
-  if(strategy==="Balanced") sc=.55*balance+.45*share;
-  if(strategy==="Low sharing risk") sc=.75*share+.25*balance;
-  if(strategy==="Hot numbers") sc=50+hot*14+share*.22+balance*.18;
-  if(strategy==="Overdue numbers") sc=50+due*14+share*.22+balance*.18;
-  return {score:Math.max(0,Math.min(100,sc)),balance,share,...f};
+
+  const sharing=lowSharing(line);
+  const hot=line.reduce((a,n)=>a+zScore(s.freq,n),0)/line.length;
+  const overdue=line.reduce((a,n)=>a+zScore(s.last,n),0)/line.length;
+
+  let score=50;
+  if(strategy==="Balanced") score=.55*balance+.45*sharing;
+  if(strategy==="Low sharing risk") score=.75*sharing+.25*balance;
+  if(strategy==="Hot numbers") score=50+hot*14+sharing*.22+balance*.18;
+  if(strategy==="Overdue numbers") score=50+overdue*14+sharing*.22+balance*.18;
+
+  return {
+    score:Math.max(0,Math.min(100,score)),
+    balance,sharing,sum:f.sum
+  };
 }
+
+function chooseStars(strategy,s){
+  const cfg=GAMES[activeGame];
+  if(!cfg.stars) return [];
+  if(strategy==="Pure random" || !draws.length) return sample(cfg.starMax,cfg.stars);
+
+  const ranked=[];
+  for(let star=1;star<=cfg.starMax;star++){
+    let value=0;
+    if(strategy==="Hot numbers") value=zScore(s.starFreq,star);
+    else if(strategy==="Overdue numbers") value=zScore(s.starLast,star);
+    else value=.5*zScore(s.starFreq,star)+.2*zScore(s.starLast,star)+Math.random()*.3;
+    ranked.push({star,value:value+Math.random()*.12});
+  }
+  ranked.sort((a,b)=>b.value-a.value);
+  return ranked.slice(0,cfg.stars).map(x=>x.star).sort((a,b)=>a-b);
+}
+
 function generate(){
-  const strategy=$("#strategy").value, s=drawStats(), pool=[];
-  if(strategy==="Pure random"){
-    for(let i=0;i<lineCount;i++) pool.push({line:sample6(),detail:null});
+  const cfg=GAMES[activeGame];
+  const strategy=$("#strategy").value;
+  const s=analysis();
+  const pool=[];
+
+  if(strategy==="Pure random" || !draws.length){
+    for(let i=0;i<lineCount;i++){
+      pool.push({
+        line:sample(cfg.max,cfg.picks),
+        stars:chooseStars(strategy,s),
+        detail:null
+      });
+    }
   } else {
     const seen=new Set();
-    for(let i=0;i<7000;i++){
-      const line=sample6(),k=line.join(",");
-      if(seen.has(k))continue;
+    const trials=Math.max(7000,lineCount*1200);
+    for(let i=0;i<trials;i++){
+      const line=sample(cfg.max,cfg.picks), k=line.join(",");
+      if(seen.has(k)) continue;
       seen.add(k);
-      pool.push({line,detail:score(line,strategy,s)});
+      pool.push({
+        line,
+        stars:chooseStars(strategy,s),
+        detail:scoreLine(line,strategy,s)
+      });
     }
     pool.sort((a,b)=>b.detail.score-a.detail.score);
-    const chosen=[];
+
+    const picked=[];
     for(const item of pool){
-      if(chosen.every(x=>item.line.filter(n=>x.line.includes(n)).length<=4))chosen.push(item);
-      if(chosen.length===lineCount)break;
+      if(picked.every(x=>item.line.filter(n=>x.line.includes(n)).length<=cfg.picks-2)){
+        picked.push(item);
+      }
+      if(picked.length===lineCount) break;
     }
-    pool.splice(0,pool.length,...chosen);
+    pool.splice(0,pool.length,...picked);
   }
+
   const stamp=new Date().toISOString();
-  const saved=pool.map(x=>({...x,strategy,created:stamp}));
-  saveHistory(saved);
+  const saved=pool.map(x=>({...x,game:activeGame,strategy,created:stamp}));
+  const old=JSON.parse(localStorage.getItem("lottoEdgeHistory")||"[]");
+  localStorage.setItem("lottoEdgeHistory",JSON.stringify([...saved,...old].slice(0,100)));
   renderPicks(saved);
   navigator.vibrate?.(35);
 }
+
 function renderPicks(items){
   $("#results").innerHTML=items.map((x,i)=>`
     <div class="ticket">
-      <div class="ticket-head"><strong>Line ${i+1}</strong><span class="pill">${x.detail?`Score ${Math.round(x.detail.score)}/100`:"Random"}</span></div>
+      <div class="ticket-head">
+        <strong>Line ${i+1}</strong>
+        <span class="pill">${x.detail?`Score ${Math.round(x.detail.score)}/100`:"Random"}</span>
+      </div>
       <div class="balls">${x.line.map(n=>`<span class="ball">${n}</span>`).join("")}</div>
-      <div class="ticket-meta">${x.detail?`<span>Balance ${Math.round(x.detail.balance)}</span><span>Low-sharing ${Math.round(x.detail.share)}</span><span>Sum ${x.detail.sum}</span>`:"<span>Pure random selection</span>"}</div>
+      ${x.stars?.length?`
+        <div class="ticket-meta" style="font-size:13px;margin-top:10px">
+          <span><b>Lucky Stars</b> ⭐ ${x.stars.join(" &nbsp; ⭐ ")}</span>
+        </div>`:""}
+      <div class="ticket-meta">
+        ${x.detail?
+          `<span>Balance ${Math.round(x.detail.balance)}</span>
+           <span>Low-sharing ${Math.round(x.detail.sharing)}</span>
+           <span>Sum ${x.detail.sum}</span>`:
+          `<span>Pure random selection</span>`}
+      </div>
     </div>`).join("");
 }
+
 function updateSummary(){
-  const s=drawStats();
+  const cfg=GAMES[activeGame], s=analysis();
   $("#drawCount").textContent=draws.length;
-  if(!draws.length){$("#hotNumber").textContent="—";$("#overdueNumber").textContent="—";return;}
+  if(!draws.length){
+    $("#hotNumber").textContent="—";
+    $("#overdueNumber").textContent="—";
+    return;
+  }
   let hot=1,due=1;
-  for(let n=2;n<=59;n++){
-    if(s.freq[n]>s.freq[hot])hot=n;
-    if(s.last[n]>s.last[due])due=n;
+  for(let n=2;n<=cfg.max;n++){
+    if(s.freq[n]>s.freq[hot]) hot=n;
+    if(s.last[n]>s.last[due]) due=n;
   }
   $("#hotNumber").textContent=hot;
   $("#overdueNumber").textContent=due;
 }
+
 function renderStats(kind="hot"){
-  const s=drawStats(), target=$("#statList");
-  if(!draws.length){target.innerHTML='<div class="empty">Import draw history first.</div>';return;}
+  const cfg=GAMES[activeGame], s=analysis(), target=$("#statList");
+  if(!draws.length){
+    target.innerHTML='<div class="empty">No historical data for this game yet.</div>';
+    return;
+  }
   let rows=[];
   if(kind==="pairs"){
-    rows=Object.entries(s.pairs).sort((a,b)=>b[1]-a[1]).slice(0,20).map(([k,v])=>({label:k.replace("-", " + "),v}));
+    rows=Object.entries(s.pairs).sort((a,b)=>b[1]-a[1]).slice(0,20)
+      .map(([k,v])=>({label:k.replace("-"," + "),v}));
   } else {
-    for(let n=1;n<=59;n++) rows.push({label:n,v:kind==="hot"?s.freq[n]:s.last[n]});
+    for(let n=1;n<=cfg.max;n++){
+      rows.push({label:n,v:kind==="hot"?s.freq[n]:s.last[n]});
+    }
     rows.sort((a,b)=>b.v-a.v);
     rows=rows.slice(0,20);
   }
@@ -192,109 +400,130 @@ function renderStats(kind="hot"){
       <div class="bar"><i style="width:${r.v/max*100}%"></i></div>
       <div class="stat-value">${r.v}</div>
     </div>`).join("");
-}
-function renderHistory(){
-  const h=getHistory(), el=$("#ticketHistory");
-  if(!h.length){el.innerHTML='<div class="empty">Your generated lines will be saved here on this phone.</div>';return;}
-  el.innerHTML=h.map(x=>`
-    <div class="ticket">
-      <div class="ticket-head"><strong>${x.strategy}</strong><span class="pill">${new Date(x.created).toLocaleDateString()}</span></div>
-      <div class="balls">${x.line.map(n=>`<span class="ball">${n}</span>`).join("")}</div>
-    </div>`).join("");
-}
-function parseCSV(text){
-  const lines=text.replace(/\r/g,"").split("\n").filter(x=>x.trim());
-  if(lines.length<2) return [];
-  const parseLine=line=>{
-    const out=[];let cur="",q=false;
-    for(let i=0;i<line.length;i++){
-      const ch=line[i];
-      if(ch==='"'){
-        if(q && line[i+1]==='"'){cur+='"';i++;}
-        else q=!q;
-      } else if(ch==="," && !q){out.push(cur.trim());cur="";}
-      else cur+=ch;
-    }
-    out.push(cur.trim());return out;
-  };
-  const headers=parseLine(lines[0]).map(h=>h.toLowerCase().replace(/[_-]/g," ").trim());
-  const find=(aliases)=>headers.findIndex(h=>aliases.includes(h));
-  const idxs=[];
-  for(let i=1;i<=6;i++){
-    idxs.push(find([`n${i}`,`ball ${i}`,`ball${i}`,`number ${i}`,`number${i}`]));
-  }
-  const dateIdx=find(["date","draw date","drawdate"]);
-  const bonusIdx=find(["bonus","bonus ball","bonusball","ball 7","ball7"]);
-  if(idxs.some(i=>i<0)) return [];
 
-  const out=[];
-  for(let r=1;r<lines.length;r++){
-    const vals=parseLine(lines[r]);
-    const nums=idxs.map(i=>Number(vals[i]));
-    if(nums.length!==6 || nums.some(n=>!Number.isFinite(n)||n<1||n>59) || new Set(nums).size!==6) continue;
-    const b=bonusIdx>=0 ? Number(vals[bonusIdx]) : null;
-    out.push({
-      date:dateIdx>=0 ? vals[dateIdx] : "",
-      numbers:nums.sort((a,b)=>a-b),
-      bonus:Number.isFinite(b)?b:null
-    });
+  if(activeGame==="euromillions" && kind!=="pairs"){
+    const sf=[];
+    for(let n=1;n<=cfg.starMax;n++){
+      sf.push({n,v:kind==="hot"?s.starFreq[n]:s.starLast[n]});
+    }
+    sf.sort((a,b)=>b.v-a.v);
+    target.innerHTML += `<h3 style="margin-top:22px">Lucky Stars</h3>`+
+      sf.map(r=>`
+        <div class="stat-row">
+          <div class="numdot">⭐${r.n}</div>
+          <div class="bar"><i style="width:${r.v/Math.max(...sf.map(x=>x.v),1)*100}%"></i></div>
+          <div class="stat-value">${r.v}</div>
+        </div>`).join("");
   }
-  return out;
 }
-async function importCSV(file){
-  const text=await file.text();
-  const imported=parseCSV(text);
-  if(!imported.length) throw new Error("No valid 6-number Lotto rows were detected.");
-  draws=dedupeAndSort([...imported,...draws]);
-  saveDraws();
-  updateSummary();renderStats();
-  return imported.length;
-}
-async function checkUpdates(manual=false){
-  const url=localStorage.getItem("lottoEdgeUpdateUrl")||"";
-  if(!url){
-    if(manual) $("#updateStatus").textContent="No update source is saved. Add one in Settings, or import a CSV.";
+
+function renderHistory(){
+  const h=JSON.parse(localStorage.getItem("lottoEdgeHistory")||"[]");
+  const el=$("#ticketHistory");
+  if(!h.length){
+    el.innerHTML='<div class="empty">Your generated lines will be saved here on this phone.</div>';
     return;
   }
+  el.innerHTML=h.map(x=>`
+    <div class="ticket">
+      <div class="ticket-head">
+        <strong>${GAMES[x.game]?.name||"Lotto"} · ${x.strategy}</strong>
+        <span class="pill">${new Date(x.created).toLocaleDateString()}</span>
+      </div>
+      <div class="balls">${x.line.map(n=>`<span class="ball">${n}</span>`).join("")}</div>
+      ${x.stars?.length?`<div class="ticket-meta"><b>Lucky Stars</b>&nbsp; ⭐ ${x.stars.join(" &nbsp; ⭐ ")}</div>`:""}
+    </div>`).join("");
+}
+
+async function switchGame(gameKey){
+  activeGame=gameKey;
+  localStorage.setItem("lottoEdgeGame",gameKey);
+  draws=await ensureGameData(gameKey);
+  $("#gameLabel").textContent=GAMES[gameKey].label;
+  $("#lottoGame").style.borderColor=gameKey==="lotto"?"#e8ff54":"";
+  $("#euroGame").style.borderColor=gameKey==="euromillions"?"#e8ff54":"";
+  $("#results").innerHTML="";
+  updateSummary();
+  renderStats("hot");
+  updateSettingsText();
+}
+
+function updateSettingsText(){
+  const info=$("#importStatus");
+  if(activeGame==="euromillions"){
+    info.textContent=`EuroMillions: ${draws.length} historical draws stored locally.`;
+  } else {
+    info.textContent=`Lotto: ${draws.length} draws stored locally.`;
+  }
+}
+
+async function importSelectedCsv(){
+  const file=$("#csvInput").files[0];
+  if(!file){$("#importStatus").textContent="Choose a CSV file first.";return;}
+  const imported=parseCsv(await file.text(),activeGame);
+  if(!imported.length){
+    $("#importStatus").textContent="No valid rows for the selected game were detected.";
+    return;
+  }
+  draws=dedupeSort([...imported,...draws]);
+  saveGameDraws(activeGame,draws);
+  $("#importStatus").textContent=`Imported ${imported.length} rows. ${draws.length} draws stored locally.`;
+  updateSummary(); renderStats("hot");
+}
+
+async function updateEuroFromInternet(manual=false){
+  if(activeGame!=="euromillions") return;
   if(!navigator.onLine){
-    if(manual) $("#updateStatus").textContent="Offline. Lotto Edge is using the draw history already stored on this phone.";
+    if(manual) $("#updateStatus").textContent="Offline. Using EuroMillions history stored on this phone.";
     return;
   }
   try{
-    if(manual) $("#updateStatus").textContent="Checking for new draws…";
-    const r=await fetch(url,{cache:"no-store"});
+    if(manual) $("#updateStatus").textContent="Checking EuroMillions history…";
+    const r=await fetch(EURO_REMOTE,{cache:"no-store"});
     if(!r.ok) throw new Error(`HTTP ${r.status}`);
-    const imported=parseCSV(await r.text());
-    if(!imported.length) throw new Error("No recognisable draw rows found.");
+    const incoming=parseCsv(await r.text(),"euromillions");
+    if(!incoming.length) throw new Error("No draw rows found");
     const before=draws.length;
-    draws=dedupeAndSort([...imported,...draws]);
-    saveDraws();
-    updateSummary();renderStats();
-    localStorage.setItem("lottoEdgeLastUpdate",Date.now());
-    if(manual) $("#updateStatus").textContent=`Updated. ${draws.length-before} new draw rows added; ${draws.length} stored locally.`;
+    draws=dedupeSort([...incoming,...draws]);
+    saveGameDraws("euromillions",draws);
+    localStorage.setItem("lottoEdgeEuroLastUpdate",Date.now());
+    updateSummary(); renderStats("hot");
+    if(manual) $("#updateStatus").textContent=`EuroMillions updated: ${draws.length-before} new draws; ${draws.length} total.`;
   }catch(e){
-    if(manual) $("#updateStatus").textContent=`Could not update from that source: ${e.message}`;
+    if(manual) $("#updateStatus").textContent="Update unavailable right now. The full stored history remains usable offline.";
   }
 }
-function autoUpdateOnOpen(){
-  const url=localStorage.getItem("lottoEdgeUpdateUrl")||"";
-  if(!url || !navigator.onLine) return;
-  const last=+(localStorage.getItem("lottoEdgeLastUpdate")||0);
-  if(Date.now()-last>6*60*60*1000) checkUpdates(false);
+
+function autoUpdateEuro(){
+  if(activeGame!=="euromillions" || !navigator.onLine) return;
+  const last=Number(localStorage.getItem("lottoEdgeEuroLastUpdate")||0);
+  if(Date.now()-last>12*60*60*1000) updateEuroFromInternet(false);
 }
 
-$("#strategy").addEventListener("change",e=>$("#strategyInfo").textContent=descriptions[e.target.value]);
+$("#strategy").addEventListener("change",e=>{
+  $("#strategyInfo").textContent=descriptions[e.target.value];
+});
 $("#strategyInfo").textContent=descriptions[$("#strategy").value];
-$("#minusLine").onclick=()=>{lineCount=Math.max(1,lineCount-1);$("#lineCount").textContent=lineCount};
-$("#plusLine").onclick=()=>{lineCount=Math.min(10,lineCount+1);$("#lineCount").textContent=lineCount};
+
+$("#minusLine").onclick=()=>{
+  lineCount=Math.max(1,lineCount-1);
+  $("#lineCount").textContent=lineCount;
+};
+$("#plusLine").onclick=()=>{
+  lineCount=Math.min(10,lineCount+1);
+  $("#lineCount").textContent=lineCount;
+};
 $("#generateBtn").onclick=generate;
+$("#lottoGame").onclick=()=>switchGame("lotto");
+$("#euroGame").onclick=()=>switchGame("euromillions");
 
 $$(".bottom-nav button").forEach(b=>b.onclick=()=>{
   $$(".bottom-nav button").forEach(x=>x.classList.remove("active"));
   b.classList.add("active");
   $$(".screen").forEach(x=>x.classList.remove("active"));
   $("#"+b.dataset.screen).classList.add("active");
-  if(b.dataset.screen==="historyScreen")renderHistory();
+  if(b.dataset.screen==="historyScreen") renderHistory();
+  if(b.dataset.screen==="settingsScreen") updateSettingsText();
 });
 
 $$(".segmented button").forEach(b=>b.onclick=()=>{
@@ -308,51 +537,27 @@ $("#clearHistory").onclick=()=>{
   renderHistory();
 };
 
-$("#refreshBtn").onclick=()=>checkUpdates(true);
+$("#importBtn").onclick=importSelectedCsv;
 
-$("#importBtn").onclick=async()=>{
-  const file=$("#csvInput").files[0];
-  if(!file){$("#importStatus").textContent="Choose a CSV file first.";return;}
-  $("#importStatus").textContent="Importing…";
-  try{
-    const n=await importCSV(file);
-    $("#importStatus").textContent=`Imported ${n} valid draw rows. ${draws.length} stored locally.`;
-  }catch(e){
-    $("#importStatus").textContent=e.message;
-  }
-};
-
-$("#saveUrlBtn").onclick=()=>{
-  const url=$("#updateUrl").value.trim();
-  if(!url){
-    localStorage.removeItem("lottoEdgeUpdateUrl");
-    $("#urlStatus").textContent="Update source removed.";
-    return;
-  }
-  localStorage.setItem("lottoEdgeUpdateUrl",url);
-  $("#urlStatus").textContent="Saved. Lotto Edge will check this source when opened and when you tap Check updates.";
-};
-
-window.addEventListener("beforeinstallprompt",e=>{
-  e.preventDefault();
-  deferredPrompt=e;
-  $("#installBtn").classList.remove("hidden");
+// Existing "Check updates" button from the base app.
+$("#refreshBtn")?.addEventListener("click",()=>{
+  if(activeGame==="euromillions") updateEuroFromInternet(true);
+  else $("#updateStatus").textContent="Automatic update is currently enabled for EuroMillions. Lotto can still be updated by CSV import.";
 });
-$("#installBtn").onclick=async()=>{
-  if(!deferredPrompt)return;
-  deferredPrompt.prompt();
-  await deferredPrompt.userChoice;
-  deferredPrompt=null;
-  $("#installBtn").classList.add("hidden");
-};
+
+// Hide/remove obsolete generic remote URL controls if present.
+const urlBox=$("#updateUrl");
+if(urlBox){
+  const card=urlBox.closest(".settings-card");
+  if(card) card.style.display="none";
+}
 
 if("serviceWorker" in navigator){
   navigator.serviceWorker.register("service-worker.js");
 }
 
-loadLocalDraws();
-$("#updateUrl").value=localStorage.getItem("lottoEdgeUpdateUrl")||"";
-updateSummary();
-renderStats();
-renderHistory();
-autoUpdateOnOpen();
+(async()=>{
+  await switchGame(activeGame);
+  renderHistory();
+  autoUpdateEuro();
+})();

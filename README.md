@@ -61,3 +61,20 @@ manual CSV import still works completely offline afterwards.
 In a fair lottery, every valid line has the same mathematical chance of being drawn.
 Historical weighting is descriptive, not predictive. Low Sharing Risk attempts to avoid
 common human-selection patterns and concerns possible prize-sharing, not draw probability.
+
+
+## EuroMillions update
+Added EuroMillions 5/50 + 2 Lucky Stars (1–12) selection mode alongside UK Lotto.
+
+
+## v3 — Full EuroMillions history
+
+EuroMillions now ships with the complete historical draw dataset from 2004 through the
+latest bundled draw. The app analyses both the five main numbers and the two Lucky Stars.
+
+When the app is opened with internet access, it can refresh the EuroMillions history from
+the public lottery-archive CSV. The downloaded data is then stored locally and remains
+available offline.
+
+EuroMillions strategies now genuinely use EuroMillions history rather than merely generating
+valid 5+2 combinations.
