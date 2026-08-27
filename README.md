@@ -64,3 +64,16 @@ so switching tabs and rendering stats does not repeatedly recalculate thousands 
 draws.
 
 This version is designed so a failing external Lotto source cannot freeze or slow the UI.
+
+## v9 — Correct UK Lotto archive source
+
+Replaced the previous Lotto endpoint with a validated UK Lotto historical archive containing
+more than 3,000 draws from 1994 through early 2025. The file contains the six main numbers
+plus the bonus ball and is cached in localStorage after the first successful background load.
+
+Important: older UK Lotto draws used 1–49; the game expanded to 1–59 in October 2015.
+The analysis engine retains the historical draws as actually played rather than pretending
+numbers 50–59 existed before the rule change.
+
+Game switching remains non-blocking: if the archive needs downloading, the screen switches
+immediately and the draw count updates automatically when the background load completes.

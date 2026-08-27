@@ -1,7 +1,7 @@
 
 const $ = s => document.querySelector(s);
 
-const APP_VERSION="8.0.0";
+const APP_VERSION="9.0.0";
 
 async function checkAppVersion(){
   try{
@@ -25,12 +25,8 @@ const $$ = s => [...document.querySelectorAll(s)];
 const EURO_REMOTE =
   "https://raw.githubusercontent.com/daowa89/lottery-archive/main/eu/euromillions/results.csv";
 const LOTTO_REMOTE =
-  "https://www.lottometrics.app/api/export/draws/uknationallottery/all/json";
-const LOTTO_SOURCES = [
-  LOTTO_REMOTE,
-  "https://corsproxy.io/?" + encodeURIComponent(LOTTO_REMOTE),
-  "https://api.allorigins.win/raw?url=" + encodeURIComponent(LOTTO_REMOTE)
-];
+  "https://raw.githubusercontent.com/sa-ccr/Trading/master/inst/extdata/UK_Lottery_history.csv";
+const LOTTO_SOURCES = [LOTTO_REMOTE];
 
 const GAMES = {
   lotto:{name:"Lotto",label:"UK LOTTO · 6 / 59",max:59,picks:6,stars:0,starMax:0,storage:"lottoEdgeDraws"},
@@ -103,6 +99,21 @@ function parseCsv(text, gameKey){
   return out;
 }
 
+function parseUkLottoCsv(text){
+  const lines=String(text||"").trim().split(/\r?\n/);
+  if(lines.length<1000)return [];
+  const out=[];
+  for(let i=1;i<lines.length;i++){
+    const c=lines[i].split(",").map(x=>x.trim().replace(/^"|"$/g,""));
+    if(c.length<8)continue;
+    const nums=c.slice(1,7).map(Number);
+    const bonus=Number(c[7]);
+    if(nums.length!==6 || nums.some(n=>!Number.isFinite(n)||n<1||n>59) || new Set(nums).size!==6)continue;
+    out.push({date:c[0],numbers:nums.sort((a,b)=>a-b),stars:[],bonus:Number.isFinite(bonus)?bonus:null});
+  }
+  return out; // source is already newest-first
+}
+
 function parseLottoJson(payload){
   try{
     const rows=typeof payload==="string" ? JSON.parse(payload) : payload;
@@ -148,20 +159,14 @@ async function fetchWithTimeout(url,ms=4500){
 }
 
 async function fetchFullLottoHistoryFast(){
-  // Short, bounded attempts only. Never block game switching.
-  const sources=[
-    LOTTO_REMOTE,
-    "https://api.allorigins.win/raw?url="+encodeURIComponent(LOTTO_REMOTE)
-  ];
-  for(const url of sources){
-    try{
-      const r=await fetchWithTimeout(url,4500);
-      if(!r.ok)continue;
-      const parsed=parseLottoJson(await r.text());
-      if(parsed.length>2500)return [...parsed].reverse();
-    }catch{}
+  try{
+    const r=await fetchWithTimeout(LOTTO_REMOTE,6500);
+    if(!r.ok)return [];
+    const parsed=parseUkLottoCsv(await r.text());
+    return parsed.length>3000 ? parsed : [];
+  }catch{
+    return [];
   }
-  return [];
 }
 
 async function backgroundRefreshGame(key,manual=false){
@@ -180,18 +185,18 @@ async function backgroundRefreshGame(key,manual=false){
   try{
     if(key==="lotto"){
       const full=await fetchFullLottoHistoryFast();
-      if(full.length>2500){
+      if(full.length>3000){
         saveStored("lotto",full);
         localStorage.setItem("lottoEdgeLottoLastUpdate",Date.now());
         if(activeGame==="lotto"){
           draws=full;invalidateAnalysis();summary();renderStats(activeStat);
-          if(mainStatus)mainStatus.textContent=`Full Lotto history loaded locally: ${draws.length} draws.`;
+          if(mainStatus)mainStatus.textContent=`UK Lotto archive loaded locally: ${draws.length} historical draws.`;
         }
-        if(manual)$("#updateStatus").textContent=`Lotto history updated: ${full.length} draws.`;
+        if(manual)$("#updateStatus").textContent=`UK Lotto archive updated: ${full.length} draws stored locally.`;
       }else{
         if(key===activeGame && mainStatus)mainStatus.textContent=
           draws.length<1000
-            ? "Full Lotto history source is currently unavailable; using local fallback data."
+            ? "UK Lotto archive is temporarily unavailable; using local fallback data."
             : `${draws.length} Lotto draws stored locally.`;
         if(manual)$("#updateStatus").textContent="Could not reach the full Lotto archive right now.";
       }
@@ -220,6 +225,22 @@ async function ensureData(key){
   let d=loadStored(key);
 
   if(key==="lotto"){
+    // If a full history has already been downloaded, startup is instant.
+    if(d.length>1000)return d;
+
+    // Optional bundled snapshot: if present in a later release, prefer it.
+    try{
+      const r=await fetch("lotto_history.csv",{cache:"force-cache"});
+      if(r.ok){
+        const local=parseUkLottoCsv(await r.text());
+        if(local.length>1000){
+          saveStored(key,local);
+          return local;
+        }
+      }
+    }catch{}
+
+    // Never block the UI waiting for the internet.
     if(!d.length){d=LOTTO_DEMO;saveStored(key,d);}
     return d;
   }
