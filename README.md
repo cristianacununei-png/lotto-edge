@@ -225,3 +225,16 @@ much more informative baseline. A percentile near 50th means performance is roug
 with the random-control distribution.
 
 The result remains historical and descriptive; it is not evidence that future draws are predictable.
+
+
+## v18 — Statistical validation + visible version
+
+- App version is now visible in the header.
+- Walk-forward backtests support 500 and 1,000 historical draws where history permits.
+- Random-control distributions support up to 1,000 portfolios per historical draw.
+- Backtests report 95% confidence intervals for Edge-vs-random lift.
+- Per-draw percentile spread is shown to make instability visible.
+- Factor ablation can remove each Edge AI component in turn and measure the historical change.
+- Existing portfolio-mode comparison, calibration, adaptive concentration and robust Monte Carlo controls remain available.
+
+These diagnostics are historical validation tools. They do not imply that fair lottery draws are predictable.

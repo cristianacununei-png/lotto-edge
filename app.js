@@ -1,7 +1,7 @@
 
 const $ = s => document.querySelector(s);
 
-const APP_VERSION="17.0.0";
+const APP_VERSION="18.0.0";
 
 async function checkAppVersionInBackground(){
   try{
@@ -1337,6 +1337,24 @@ function correlation(xs,ys){
   return dx&&dy?num/(dx*dy):0;
 }
 
+function quantile(values,q){
+  if(!values.length)return 0;
+  const a=[...values].sort((x,y)=>x-y);
+  const pos=(a.length-1)*q,lo=Math.floor(pos),hi=Math.ceil(pos);
+  return lo===hi?a[lo]:a[lo]+(a[hi]-a[lo])*(pos-lo);
+}
+
+function meanCI95(values){
+  if(!values.length)return {mean:0,lo:0,hi:0};
+  const m=mean(values);
+  if(values.length<2)return {mean:m,lo:m,hi:m};
+  const variance=values.reduce((s,x)=>s+(x-m)**2,0)/(values.length-1);
+  const se=Math.sqrt(variance/values.length);
+  return {mean:m,lo:m-1.96*se,hi:m+1.96*se};
+}
+
+function formatSigned(n,d=3){return `${n>=0?"+":""}${n.toFixed(d)}`}
+
 async function runBacktest(){
   const requested=Number($("#testSize").value);
   const controls=Number($("#controlRuns").value);
@@ -1358,6 +1376,7 @@ async function runBacktest(){
   let random2=0,random3=0,random4=0,random5=0;
   let percentileSum=0,percentileBestSum=0;
   const edgeScores=[],futureHits=[];
+  const bestDiffs=[],totalDiffs=[],drawPercentiles=[];
 
   for(let t=0;t<tests;t++){
     const target=draws[t];
@@ -1397,8 +1416,13 @@ async function runBacktest(){
       if(ro.bestMain>=5)c5++;
     }
 
-    percentileSum+=percentile(eo.totalMain,controlTotals);
-    percentileBestSum+=percentile(eo.bestMain,controlBests);
+    const drawTotalPct=percentile(eo.totalMain,controlTotals);
+    const drawBestPct=percentile(eo.bestMain,controlBests);
+    percentileSum+=drawTotalPct;
+    percentileBestSum+=drawBestPct;
+    drawPercentiles.push(drawBestPct);
+    bestDiffs.push(eo.bestMain-(ctrlBestMain/controls));
+    totalDiffs.push(eo.totalMain-(ctrlTotalMain/controls));
 
     randomTotalMain+=ctrlTotalMain/controls;
     randomBestMain+=ctrlBestMain/controls;
@@ -1422,6 +1446,9 @@ async function runBacktest(){
   const avgPercentile=percentileSum/tests;
   const avgBestPercentile=percentileBestSum/tests;
   const corr=correlation(edgeScores,futureHits);
+  const bestCI=meanCI95(bestDiffs);
+  const totalCI=meanCI95(totalDiffs);
+  const pctLo=quantile(drawPercentiles,.025),pctHi=quantile(drawPercentiles,.975);
 
   let interpretation="No clear historical advantage over the random-control distribution.";
   if(avgBestPercentile>=60 && avgEdgeBest>avgRandBest)interpretation="Edge AI ranked above most random-control portfolios in this sample.";
@@ -1438,6 +1465,8 @@ async function runBacktest(){
       <div class="bt-card"><b>${avgRandTotal.toFixed(3)}</b><small>Random total matches / ticket</small></div>
       <div class="bt-card"><b>${corr.toFixed(3)}</b><small>Edge score → future-hit correlation</small></div>
       <div class="bt-card"><b>${tests}</b><small>walk-forward draws tested</small></div>
+      <div class="bt-card"><b>${formatSigned(bestCI.mean)}</b><small>best-line lift vs random</small></div>
+      <div class="bt-card"><b>${formatSigned(totalCI.mean)}</b><small>total-ticket lift vs random</small></div>
     </div>
 
     <table class="bt-table">
@@ -1459,7 +1488,33 @@ async function runBacktest(){
         Edge-score correlation tests whether higher model scores were actually associated with better subsequent outcomes.
         Values near zero mean the model score did not meaningfully rank future hits in this sample.
       </p>
+      <p class="ci-note">95% confidence interval for best-line lift: ${formatSigned(bestCI.lo)} to ${formatSigned(bestCI.hi)}. Total-ticket lift: ${formatSigned(totalCI.lo)} to ${formatSigned(totalCI.hi)}. Per-draw best-line percentile range (2.5–97.5%): ${pctLo.toFixed(1)}th–${pctHi.toFixed(1)}th. If a lift interval crosses zero, this sample does not show a statistically clear advantage over the random controls.</p>
     </div>`;
+}
+
+async function runFactorAblation(){
+  if(draws.length<120){$("#backtestStatus").textContent="Not enough history for factor ablation.";return;}
+  const btn=$("#runAblation");btn.disabled=true;
+  const base=getModelWeights();
+  const labels={historical:"Long-term history",recent:"Recent form",overdue:"Overdue",pairStrength:"Pair strength",structure:"Structure",sharing:"Low-sharing"};
+  const requested=Math.min(Number($("#testSize").value),200);
+  const rows=[];
+  $("#backtestStatus").textContent="Running factor ablation…";
+  const baseline=await evaluateWeights(base,requested);
+  rows.push({factor:"Full model",avg:baseline.avg,delta:0});
+  for(const key of Object.keys(base)){
+    const w={...base,[key]:0};
+    const sum=Object.values(w).reduce((a,b)=>a+b,0)||1;
+    Object.keys(w).forEach(k=>w[k]/=sum);
+    $("#backtestStatus").textContent=`Ablation: removing ${labels[key]}…`;
+    const r=await evaluateWeights(w,requested);
+    rows.push({factor:`Without ${labels[key]}`,avg:r.avg,delta:r.avg-baseline.avg});
+  }
+  rows.sort((a,b)=>b.avg-a.avg);
+  const strongest=[...rows].filter(x=>x.factor!=="Full model").sort((a,b)=>a.delta-b.delta)[0];
+  $("#backtestStatus").textContent="Factor ablation complete.";
+  $("#backtestResults").innerHTML=`<table class="bt-table"><tr><th>Model</th><th>Avg main matches</th><th>Δ vs full</th></tr>${rows.map(r=>`<tr><td>${r.factor}</td><td>${r.avg.toFixed(3)}</td><td>${formatSigned(r.delta)}</td></tr>`).join("")}</table><div class="settings-card" style="margin-top:12px"><b>Factor diagnostic</b><p class="muted">A negative delta means performance fell when that factor was removed, so it contributed positively in this historical sample. A positive delta means the model improved without it and the factor may deserve less weight.</p><p class="muted">Largest observed positive contribution: <span class="ablation-best">${strongest.factor.replace("Without ","")}</span> (${formatSigned(-strongest.delta)} average matches when present).</p></div>`;
+  btn.disabled=false;
 }
 
 async function comparePortfolioModes(){
@@ -1569,6 +1624,7 @@ function renderConcentrationInfo(){
     `Portfolio mode: ${getConcentrationMode()}. Historical concentration baseline: ${calibrated}.`;
 }
 
+$("#versionBadge").textContent=`v${APP_VERSION.split(".")[0]}`;
 $("#strategyInfo").textContent=descriptions[$("#strategy").value];
 $("#strategy").onchange=e=>$("#strategyInfo").textContent=descriptions[e.target.value];
 $("#concentrationMode").value=getConcentrationMode();
@@ -1587,6 +1643,7 @@ $("#runBacktest").onclick=runBacktest;
 $("#calibrateModel").onclick=calibrateWeights;
 $("#calibrateConcentration").onclick=calibrateConcentration;
 $("#comparePortfolioModes").onclick=comparePortfolioModes;
+$("#runAblation").onclick=runFactorAblation;
 $("#importBtn").onclick=importCsv;
 $("#clearHistory").onclick=()=>{localStorage.removeItem("lottoEdgeHistory");renderHistory()};
 
@@ -1602,7 +1659,7 @@ $$(".bottom-nav button").forEach(b=>b.onclick=()=>{
 });
 
 if("serviceWorker" in navigator){
-  navigator.serviceWorker.register("service-worker.js?version=12")
+  navigator.serviceWorker.register("service-worker.js?version=18")
     .then(reg=>{
       // Check for a newer worker after the app has already rendered.
       setTimeout(()=>reg.update().catch(()=>{}),1500);
