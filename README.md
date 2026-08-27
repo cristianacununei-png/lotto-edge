@@ -77,3 +77,14 @@ numbers 50–59 existed before the rule change.
 
 Game switching remains non-blocking: if the archive needs downloading, the screen switches
 immediately and the draw count updates automatically when the background load completes.
+
+## v10 — Current-data top-up
+
+The deep UK Lotto archive remains stored locally. When internet is available the app now
+checks the public 2025 and 2026 Lotto result archives in the background and merges newer
+draws into the local database. It never blocks game switching.
+
+The main screen reports the latest locally stored draw date so data freshness is visible.
+
+The current-results update is deliberately a top-up layer rather than the core data source:
+if the internet or proxy is unavailable, Edge AI still has the full deep historical archive.
