@@ -133,3 +133,27 @@ different model components.
 
 The score is explicitly presented as a weighted model ranking, not as the mathematical
 probability that the line will win.
+
+
+## v14 — Whole-ticket portfolio optimisation
+
+Edge AI no longer selects the five highest-scoring lines independently.
+
+After building a large pool of strong candidate lines, the portfolio optimiser selects each
+subsequent line according to both its individual Edge score and its marginal value to the
+whole ticket.
+
+The optimiser rewards:
+- new-number coverage
+- new-pair coverage
+- diversified Lucky Star pairs
+
+It penalises:
+- repeated number slots
+- repeated pairs
+- near-clone lines
+
+Strong numbers are still allowed to repeat if their model value justifies it.
+
+The confidence card now includes Ticket Coverage, unique-number count, unique-pair count,
+repeated-number slots, repeated pairs and repeated Lucky Star pairs.

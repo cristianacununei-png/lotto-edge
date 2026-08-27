@@ -1,7 +1,7 @@
 
 const $ = s => document.querySelector(s);
 
-const APP_VERSION="13.0.0";
+const APP_VERSION="14.0.0";
 
 async function checkAppVersionInBackground(){
   try{
@@ -512,41 +512,152 @@ function chooseStars(a,strategy,cfg,usedPairs){
   return (fresh||candidates[0]).stars;
 }
 
+function portfolioMetrics(lines,cfg){
+  const numberCounts=new Map();
+  const pairCounts=new Map();
+  const starPairCounts=new Map();
+
+  lines.forEach(item=>{
+    item.line.forEach(n=>numberCounts.set(n,(numberCounts.get(n)||0)+1));
+    for(let i=0;i<item.line.length;i++){
+      for(let j=i+1;j<item.line.length;j++){
+        const k=`${item.line[i]}-${item.line[j]}`;
+        pairCounts.set(k,(pairCounts.get(k)||0)+1);
+      }
+    }
+    if((item.stars||[]).length){
+      const sk=(item.stars||[]).join("-");
+      starPairCounts.set(sk,(starPairCounts.get(sk)||0)+1);
+    }
+  });
+
+  const uniqueNumbers=numberCounts.size;
+  const totalPairs=lines.reduce((s,x)=>s+(x.line.length*(x.line.length-1)/2),0);
+  const uniquePairs=pairCounts.size;
+  const repeatedNumbers=[...numberCounts.values()].reduce((s,c)=>s+Math.max(0,c-1),0);
+  const repeatedPairs=[...pairCounts.values()].reduce((s,c)=>s+Math.max(0,c-1),0);
+  const repeatedStarPairs=[...starPairCounts.values()].reduce((s,c)=>s+Math.max(0,c-1),0);
+
+  const maxUnique=Math.min(cfg.max,lines.length*cfg.picks);
+  const numberCoverage=maxUnique?uniqueNumbers/maxUnique:0;
+  const pairCoverage=totalPairs?uniquePairs/totalPairs:0;
+
+  // Coverage score deliberately rewards pair diversity more than raw unique-number count.
+  let score=100*(.45*numberCoverage+.55*pairCoverage);
+  score-=repeatedNumbers*1.5;
+  score-=repeatedPairs*3.5;
+  score-=repeatedStarPairs*4;
+  score=Math.max(0,Math.min(100,score));
+
+  return {
+    score,uniqueNumbers,uniquePairs,repeatedNumbers,repeatedPairs,repeatedStarPairs,
+    numberCoverage,pairCoverage
+  };
+}
+
+function candidatePortfolioValue(item,chosen,cfg){
+  // Raw line quality matters, but marginal portfolio value matters too.
+  let value=item.detail?.score||50;
+
+  if(!chosen.length)return value;
+
+  const chosenNums=new Map(),chosenPairs=new Map();
+  chosen.forEach(x=>{
+    x.line.forEach(n=>chosenNums.set(n,(chosenNums.get(n)||0)+1));
+    for(let i=0;i<x.line.length;i++)for(let j=i+1;j<x.line.length;j++){
+      const k=`${x.line[i]}-${x.line[j]}`;
+      chosenPairs.set(k,(chosenPairs.get(k)||0)+1);
+    }
+  });
+
+  let newNums=0,reusedNums=0,reusedPairs=0;
+  item.line.forEach(n=>{
+    if(chosenNums.has(n))reusedNums+=chosenNums.get(n);
+    else newNums++;
+  });
+
+  for(let i=0;i<item.line.length;i++)for(let j=i+1;j<item.line.length;j++){
+    const k=`${item.line[i]}-${item.line[j]}`;
+    if(chosenPairs.has(k))reusedPairs+=chosenPairs.get(k);
+  }
+
+  // Strong numbers are allowed to repeat, but whole-pair duplication is expensive.
+  value += newNums*2.2;
+  value -= reusedNums*1.6;
+  value -= reusedPairs*5.0;
+
+  // Avoid near-clones.
+  const maxOverlap=Math.max(...chosen.map(x=>item.line.filter(n=>x.line.includes(n)).length));
+  if(maxOverlap>=cfg.picks-1)value-=30;
+  else if(maxOverlap===cfg.picks-2)value-=12;
+
+  return value;
+}
+
 function generateSmartLines(history,strategy,count,candidateCount=30000){
   const cfg=GAMES[activeGame],a=buildAnalysis(history);
+
   if(strategy==="Pure random"||!history.length){
-    return Array.from({length:count},()=>({line:sample(cfg.max,cfg.picks),stars:sample(cfg.starMax,cfg.stars),detail:null}));
+    const randomLines=Array.from({length:count},()=>({
+      line:sample(cfg.max,cfg.picks),
+      stars:sample(cfg.starMax,cfg.stars),
+      detail:null
+    }));
+    randomLines.portfolio=portfolioMetrics(randomLines,cfg);
+    return randomLines;
   }
 
   const pool=[],seen=new Set();
   for(let i=0;i<candidateCount;i++){
     const line=sample(cfg.max,cfg.picks),k=line.join(",");
-    if(seen.has(k))continue;seen.add(k);
+    if(seen.has(k))continue;
+    seen.add(k);
     pool.push({line,detail:genericScore(line,strategy,a,cfg)});
   }
+
+  // Keep a broad high-quality candidate pool; portfolio logic selects among it.
   pool.sort((x,y)=>y.detail.score-x.detail.score);
+  const shortlist=pool.slice(0,Math.min(2500,pool.length));
 
-  const chosen=[],usedStarPairs=new Set(),numberUsage=new Map();
-  for(const item of pool){
-    // Smart-ticket penalty discourages near-duplicate lines and excessive reuse.
-    const overlapOk=chosen.every(x=>item.line.filter(n=>x.line.includes(n)).length<=cfg.picks-2);
-    if(!overlapOk)continue;
+  const chosen=[];
+  const usedStarPairs=new Set();
 
-    const reuse=item.line.reduce((s,n)=>s+(numberUsage.get(n)||0),0);
-    const adjusted=item.detail.score-reuse*1.5;
-    if(chosen.length && adjusted < chosen[Math.max(0,chosen.length-1)]?.adjusted-12)continue;
+  while(chosen.length<count && shortlist.length){
+    let bestIndex=0,bestValue=-Infinity;
+
+    for(let i=0;i<shortlist.length;i++){
+      const v=candidatePortfolioValue(shortlist[i],chosen,cfg);
+      if(v>bestValue){bestValue=v;bestIndex=i;}
+    }
+
+    const item=shortlist.splice(bestIndex,1)[0];
+    item.portfolioValue=bestValue;
 
     const stars=chooseStars(a,strategy,cfg,usedStarPairs);
-    usedStarPairs.add(stars.join("-"));
     item.stars=stars;
-    item.adjusted=adjusted;
+    if(stars.length)usedStarPairs.add(stars.join("-"));
+
     chosen.push(item);
-    item.line.forEach(n=>numberUsage.set(n,(numberUsage.get(n)||0)+1));
-    if(chosen.length===count)break;
+
+    // Remove very similar candidates after each choice to keep the search efficient.
+    for(let i=shortlist.length-1;i>=0;i--){
+      const overlap=shortlist[i].line.filter(n=>item.line.includes(n)).length;
+      if(overlap>=cfg.picks-1)shortlist.splice(i,1);
+    }
   }
+
+  // Fallback if aggressive pruning prevented us filling the ticket.
+  while(chosen.length<count){
+    const item=pool.find(x=>!chosen.some(c=>c.line.join(",")===x.line.join(",")));
+    if(!item)break;
+    item.stars=chooseStars(a,strategy,cfg,usedStarPairs);
+    if(item.stars.length)usedStarPairs.add(item.stars.join("-"));
+    chosen.push(item);
+  }
+
+  chosen.portfolio=portfolioMetrics(chosen,cfg);
   return chosen;
 }
-
 function confidenceFor(items){
   const valid=items.filter(x=>x.detail);
   if(!valid.length)return null;
@@ -632,6 +743,7 @@ function renderPicks(items){
   });
 
   const c=confidenceFor(items);
+  const p=items.portfolio || portfolioMetrics(items,GAMES[activeGame]);
   if(c){
     $("#confidenceCard").classList.remove("hidden");
     $("#confidenceCard").innerHTML=`
@@ -640,7 +752,19 @@ function renderPicks(items){
         Average Edge score ${c.score.toFixed(1)}/100 ·
         model agreement ${c.agreement.toFixed(0)}/100.
       </div>
-      <div class="progress"><i style="width:${c.agreement}%"></i></div>`;
+      <div class="progress"><i style="width:${c.agreement}%"></i></div>
+
+      <div class="portfolio-card">
+        <div class="portfolio-head">
+          <b>Ticket coverage ${Math.round(p.score)}/100</b>
+          <span>${p.uniqueNumbers} unique numbers · ${p.uniquePairs} unique pairs</span>
+        </div>
+        <div class="portfolio-grid">
+          <div><b>${p.repeatedNumbers}</b><small>repeated number slots</small></div>
+          <div><b>${p.repeatedPairs}</b><small>repeated pairs</small></div>
+          ${GAMES[activeGame].stars?`<div><b>${p.repeatedStarPairs}</b><small>repeated star pairs</small></div>`:""}
+        </div>
+      </div>`;
   }else{
     $("#confidenceCard").classList.add("hidden");
   }
@@ -650,7 +774,7 @@ function generate(){
   const n=strategy==="Edge AI"?30000:9000;
   const items=generateSmartLines(draws,strategy,lineCount,n);
   const stamp=new Date().toISOString();
-  const saved=items.map(x=>({...x,game:activeGame,strategy,created:stamp}));
+  const saved=items.map(x=>({...x,game:activeGame,strategy,created:stamp,portfolio:items.portfolio||null}));
   const old=JSON.parse(localStorage.getItem("lottoEdgeHistory")||"[]");
   localStorage.setItem("lottoEdgeHistory",JSON.stringify([...saved,...old].slice(0,100)));
   renderPicks(saved);
