@@ -238,3 +238,21 @@ The result remains historical and descriptive; it is not evidence that future dr
 - Existing portfolio-mode comparison, calibration, adaptive concentration and robust Monte Carlo controls remain available.
 
 These diagnostics are historical validation tools. They do not imply that fair lottery draws are predictable.
+
+
+## v19 — Validation Lab
+
+v19 tightens the statistical interpretation of the existing backtester rather than adding
+new prediction factors.
+
+Changes:
+- percentile calculations now use mid-rank ties: values below Edge count fully and ties count half;
+- best-line and total-ticket lift remain paired draw-by-draw against random controls and are
+  interpreted through 95% confidence intervals;
+- robust-backtest results label paired lift as helpful, harmful or inconclusive;
+- factor ablation is now paired against the full model draw-by-draw;
+- each ablated factor receives a 95% confidence interval and a helpful / harmful / inconclusive verdict;
+- ablation averages two independent searches per historical draw to reduce random-search noise.
+
+A single ablation result should not automatically change the production model. A factor should
+be reconsidered only if the same result persists across different historical windows.

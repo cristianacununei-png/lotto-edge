@@ -7,9 +7,9 @@
   <meta name="apple-mobile-web-app-capable" content="yes"/>
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent"/>
   <meta name="apple-mobile-web-app-title" content="Lotto Edge"/>
-  <link rel="manifest" href="manifest.webmanifest?v=18"/>
+  <link rel="manifest" href="manifest.webmanifest?v=19"/>
   <link rel="apple-touch-icon" href="icon-192.png"/>
-  <link rel="stylesheet" href="app.css?v=18"/>
+  <link rel="stylesheet" href="app.css?v=19"/>
   <title>Lotto Edge</title>
 </head>
 <body>
@@ -17,7 +17,7 @@
   <header class="topbar">
     <div>
       <div class="eyebrow" id="gameLabel">UK LOTTO · 6 / 59</div>
-      <div class="title-row"><h1>Lotto Edge</h1><span class="version-badge" id="versionBadge">v18</span></div>
+      <div class="title-row"><h1>Lotto Edge</h1><span class="version-badge" id="versionBadge">v19</span></div>
     </div>
   </header>
 
@@ -130,6 +130,9 @@
         <button id="calibrateConcentration" class="secondary wide">CALIBRATE PORTFOLIO CONCENTRATION</button>
         <button id="comparePortfolioModes" class="secondary wide">COMPARE PORTFOLIO MODES</button>
         <button id="runAblation" class="secondary wide">RUN FACTOR ABLATION</button>
+        <p class="validation-note">
+          v19 validation: percentiles are tie-corrected and lift/ablation conclusions require paired 95% confidence intervals.
+        </p>
         <div id="backtestStatus" class="status"></div>
       </div>
       <div id="backtestResults"></div>
@@ -176,6 +179,6 @@
     <button data-screen="settingsScreen"><b>⚙️</b><span>Settings</span></button>
   </nav>
 </div>
-<script src="app.js?v=18"></script>
+<script src="app.js?v=19"></script>
 </body>
 </html>

@@ -1,7 +1,7 @@
 
 const $ = s => document.querySelector(s);
 
-const APP_VERSION="18.0.0";
+const APP_VERSION="19.0.0";
 
 async function checkAppVersionInBackground(){
   try{
@@ -1172,12 +1172,27 @@ function renderHistory(){
 
 function matchCount(a,b){return a.filter(n=>b.includes(n)).length}
 
-function quickModelLine(history,weightsOverride=null,modeOverride=null){
+function quickModelLine(history,weightsOverride=null,modeOverride=null,candidateCount=850){
   const saved=getModelWeights();
   if(weightsOverride)saveModelWeights(weightsOverride);
-  const result=generateSmartLines(history,"Edge AI",1,700,modeOverride)[0];
+
+  const cfg=GAMES[activeGame];
+  const a=buildAnalysis(history);
+  let best=null;
+
+  for(let i=0;i<candidateCount;i++){
+    const line=sample(cfg.max,cfg.picks);
+    const detail=genericScore(line,"Edge AI",a,cfg);
+    if(!best || detail.score>best.detail.score){
+      best={line,detail};
+    }
+  }
+
+  const usedStars=new Set();
+  best.stars=chooseStars(a,"Edge AI",cfg,usedStars);
+
   if(weightsOverride)saveModelWeights(saved);
-  return result;
+  return best;
 }
 
 function weightCandidates(){
@@ -1324,8 +1339,11 @@ function portfolioOutcome(ticket,target,cfg){
 
 function percentile(value,arr){
   if(!arr.length)return 0;
-  const below=arr.filter(x=>x<=value).length;
-  return 100*below/arr.length;
+  // Mid-rank percentile: ties count as half, not as outright wins.
+  // This matters for lottery backtests because match totals are highly discrete.
+  const below=arr.filter(x=>x<value).length;
+  const tied=arr.filter(x=>x===value).length;
+  return 100*(below+0.5*tied)/arr.length;
 }
 
 function correlation(xs,ys){
@@ -1351,6 +1369,20 @@ function meanCI95(values){
   const variance=values.reduce((s,x)=>s+(x-m)**2,0)/(values.length-1);
   const se=Math.sqrt(variance/values.length);
   return {mean:m,lo:m-1.96*se,hi:m+1.96*se};
+}
+
+function ciVerdict(ci,positiveMeansBetter=true){
+  if(ci.lo>0)return positiveMeansBetter?"helpful":"harmful";
+  if(ci.hi<0)return positiveMeansBetter?"harmful":"helpful";
+  return "inconclusive";
+}
+
+function verdictClass(v){
+  return v==="helpful"?"verdict-good":v==="harmful"?"verdict-bad":"verdict-neutral";
+}
+
+function formatCI(ci,d=3){
+  return `${formatSigned(ci.lo,d)} to ${formatSigned(ci.hi,d)}`;
 }
 
 function formatSigned(n,d=3){return `${n>=0?"+":""}${n.toFixed(d)}`}
@@ -1450,9 +1482,16 @@ async function runBacktest(){
   const totalCI=meanCI95(totalDiffs);
   const pctLo=quantile(drawPercentiles,.025),pctHi=quantile(drawPercentiles,.975);
 
-  let interpretation="No clear historical advantage over the random-control distribution.";
-  if(avgBestPercentile>=60 && avgEdgeBest>avgRandBest)interpretation="Edge AI ranked above most random-control portfolios in this sample.";
-  if(avgBestPercentile<=40 && avgEdgeBest<avgRandBest)interpretation="Edge AI ranked below the random-control distribution in this sample.";
+  const bestLiftVerdict=ciVerdict(bestCI,true);
+  const totalLiftVerdict=ciVerdict(totalCI,true);
+
+  let interpretation="No statistically clear historical advantage over the random-control distribution.";
+  if(bestLiftVerdict==="helpful" || totalLiftVerdict==="helpful"){
+    interpretation="At least one paired lift measure is above zero with a 95% confidence interval that does not cross zero in this sample.";
+  }
+  if(bestLiftVerdict==="harmful" && totalLiftVerdict==="harmful"){
+    interpretation="Edge AI underperformed the random controls on both paired lift measures in this sample.";
+  }
 
   $("#backtestStatus").textContent="Robust backtest complete.";
   $("#backtestResults").innerHTML=`
@@ -1481,39 +1520,141 @@ async function runBacktest(){
     <div class="settings-card" style="margin-top:12px">
       <b>${interpretation}</b>
       <p class="muted">
-        Percentiles are calculated against ${controls} random control portfolios per historical draw.
-        A 50th percentile result is roughly random-average performance.
+        Percentiles use a tie-corrected mid-rank calculation against ${controls} random-control portfolios per historical draw:
+        controls below Edge count fully, ties count half. A 50th percentile result is roughly random-average performance.
       </p>
       <p class="muted">
         Edge-score correlation tests whether higher model scores were actually associated with better subsequent outcomes.
         Values near zero mean the model score did not meaningfully rank future hits in this sample.
       </p>
-      <p class="ci-note">95% confidence interval for best-line lift: ${formatSigned(bestCI.lo)} to ${formatSigned(bestCI.hi)}. Total-ticket lift: ${formatSigned(totalCI.lo)} to ${formatSigned(totalCI.hi)}. Per-draw best-line percentile range (2.5–97.5%): ${pctLo.toFixed(1)}th–${pctHi.toFixed(1)}th. If a lift interval crosses zero, this sample does not show a statistically clear advantage over the random controls.</p>
+      <div class="validation-verdicts">
+        <div><span>Best-line lift</span><b class="${verdictClass(bestLiftVerdict)}">${bestLiftVerdict}</b><small>95% CI ${formatCI(bestCI)}</small></div>
+        <div><span>Total-ticket lift</span><b class="${verdictClass(totalLiftVerdict)}">${totalLiftVerdict}</b><small>95% CI ${formatCI(totalCI)}</small></div>
+      </div>
+      <p class="ci-note">
+        Per-draw best-line percentile range (2.5–97.5%): ${pctLo.toFixed(1)}th–${pctHi.toFixed(1)}th.
+        A paired lift interval that crosses zero is treated as inconclusive.
+      </p>
     </div>`;
 }
 
+async function evaluateAblationVariant(weights,testCount){
+  const tests=Math.min(testCount,draws.length-80);
+  const outcomes=[];
+
+  for(let t=0;t<tests;t++){
+    const target=draws[t];
+    const history=draws.slice(t+1);
+
+    // Average two searches to reduce optimiser/random-search noise.
+    let hits=0;
+    for(let rep=0;rep<2;rep++){
+      const pick=quickModelLine(history,weights,null,700);
+      hits+=matchCount(pick.line,target.numbers);
+    }
+    outcomes.push(hits/2);
+
+    if(t%6===0)await new Promise(r=>setTimeout(r,0));
+  }
+
+  return {avg:mean(outcomes),outcomes,tests};
+}
+
 async function runFactorAblation(){
-  if(draws.length<120){$("#backtestStatus").textContent="Not enough history for factor ablation.";return;}
-  const btn=$("#runAblation");btn.disabled=true;
+  if(draws.length<120){
+    $("#backtestStatus").textContent="Not enough history for factor ablation.";
+    return;
+  }
+
+  const btn=$("#runAblation");
+  btn.disabled=true;
+
   const base=getModelWeights();
-  const labels={historical:"Long-term history",recent:"Recent form",overdue:"Overdue",pairStrength:"Pair strength",structure:"Structure",sharing:"Low-sharing"};
-  const requested=Math.min(Number($("#testSize").value),200);
-  const rows=[];
-  $("#backtestStatus").textContent="Running factor ablation…";
-  const baseline=await evaluateWeights(base,requested);
-  rows.push({factor:"Full model",avg:baseline.avg,delta:0});
+  const labels={
+    historical:"Long-term history",
+    recent:"Recent form",
+    overdue:"Overdue",
+    pairStrength:"Pair strength",
+    structure:"Structure",
+    sharing:"Low-sharing"
+  };
+
+  // Cap ablation at 100 draws because each factor is tested twice per draw.
+  const requested=Math.min(Number($("#testSize").value),100);
+  $("#backtestStatus").textContent=`Running paired factor ablation across ${requested} walk-forward draws…`;
+
+  const baseline=await evaluateAblationVariant(base,requested);
+  const rows=[{
+    factor:"Full model",
+    avg:baseline.avg,
+    delta:0,
+    ci:{mean:0,lo:0,hi:0},
+    verdict:"baseline"
+  }];
+
   for(const key of Object.keys(base)){
     const w={...base,[key]:0};
     const sum=Object.values(w).reduce((a,b)=>a+b,0)||1;
     Object.keys(w).forEach(k=>w[k]/=sum);
+
     $("#backtestStatus").textContent=`Ablation: removing ${labels[key]}…`;
-    const r=await evaluateWeights(w,requested);
-    rows.push({factor:`Without ${labels[key]}`,avg:r.avg,delta:r.avg-baseline.avg});
+    const r=await evaluateAblationVariant(w,requested);
+
+    // removed - full. Positive means the model improved when the factor was removed.
+    const paired=r.outcomes.map((x,i)=>x-baseline.outcomes[i]);
+    const ci=meanCI95(paired);
+
+    let verdict="inconclusive";
+    if(ci.hi<0)verdict="helpful";   // removing it hurt performance
+    if(ci.lo>0)verdict="harmful";   // removing it improved performance
+
+    rows.push({
+      factor:`Without ${labels[key]}`,
+      avg:r.avg,
+      delta:r.avg-baseline.avg,
+      ci,
+      verdict
+    });
   }
-  rows.sort((a,b)=>b.avg-a.avg);
-  const strongest=[...rows].filter(x=>x.factor!=="Full model").sort((a,b)=>a.delta-b.delta)[0];
+
+  const diagnostics=rows.filter(x=>x.factor!=="Full model");
+  const helpful=diagnostics.filter(x=>x.verdict==="helpful");
+  const harmful=diagnostics.filter(x=>x.verdict==="harmful");
+
   $("#backtestStatus").textContent="Factor ablation complete.";
-  $("#backtestResults").innerHTML=`<table class="bt-table"><tr><th>Model</th><th>Avg main matches</th><th>Δ vs full</th></tr>${rows.map(r=>`<tr><td>${r.factor}</td><td>${r.avg.toFixed(3)}</td><td>${formatSigned(r.delta)}</td></tr>`).join("")}</table><div class="settings-card" style="margin-top:12px"><b>Factor diagnostic</b><p class="muted">A negative delta means performance fell when that factor was removed, so it contributed positively in this historical sample. A positive delta means the model improved without it and the factor may deserve less weight.</p><p class="muted">Largest observed positive contribution: <span class="ablation-best">${strongest.factor.replace("Without ","")}</span> (${formatSigned(-strongest.delta)} average matches when present).</p></div>`;
+
+  $("#backtestResults").innerHTML=`
+    <table class="bt-table ablation-table">
+      <tr><th>Model</th><th>Avg matches</th><th>Δ vs full</th><th>95% CI</th><th>Verdict</th></tr>
+      ${rows.map(r=>`
+        <tr>
+          <td>${r.factor}</td>
+          <td>${r.avg.toFixed(3)}</td>
+          <td>${r.factor==="Full model"?"—":formatSigned(r.delta)}</td>
+          <td>${r.factor==="Full model"?"—":formatCI(r.ci)}</td>
+          <td>${r.factor==="Full model"
+            ? '<span class="verdict-neutral">baseline</span>'
+            : `<span class="${verdictClass(r.verdict)}">${r.verdict}</span>`}</td>
+        </tr>`).join("")}
+    </table>
+
+    <div class="settings-card" style="margin-top:12px">
+      <b>Factor diagnostic</b>
+      <p class="muted">
+        Each factor is removed while the remaining weights are renormalised. Results are paired draw-by-draw against the full model.
+        “Helpful” means removing the factor reduced performance with a 95% interval below zero.
+        “Harmful” means removing it improved performance with a 95% interval above zero.
+      </p>
+      <p class="muted">
+        Helpful factors: ${helpful.length?helpful.map(x=>x.factor.replace("Without ","")).join(", "):"none established"}.
+        Potentially harmful factors: ${harmful.length?harmful.map(x=>x.factor.replace("Without ","")).join(", "):"none established"}.
+        Everything else is inconclusive in this validation window.
+      </p>
+      <p class="ci-note">
+        Do not automatically delete a factor from one ablation run. Re-run on different historical windows before changing the live model.
+      </p>
+    </div>`;
+
   btn.disabled=false;
 }
 
