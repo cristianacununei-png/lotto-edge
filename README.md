@@ -336,3 +336,29 @@ v21.1 incorporates a methodological correction before further model work:
 
 A future fresh production challenge should be triggered by materially newer historical draw data, not by
 repeatedly tuning against the same reserved block.
+
+
+## v21.2 — Holdout integrity correction
+
+v21.2 corrects three methodological problems in v21/v21.1.
+
+1. **Development search is explicitly non-evidential.**
+   Testing normal and inverse directions, several horizons and 31 subsets guarantees that the best
+   development output will often look positive even under noise. The UI now labels these tables as
+   selection-biased search output and does not present them as findings.
+
+2. **The weak intermediate "gate pass" is removed from production evidence.**
+   Production no longer combines overlapping gate/arena hurdles or calls an upper-CI-bound screen a pass.
+   There is one adjudicating production test: a private final arena. Promotion requires its paired lift
+   confidence interval lower bound to clear zero.
+
+3. **One new draw can no longer unlock the private holdout.**
+   The ledger stores the cutoff date of the last consumed production arena. A subsequent production run is
+   blocked until at least 150 draws with dates strictly after that cutoff have accumulated. The new arena
+   consists entirely of those genuinely new observations. Previously spent data may be used for future
+   development/search, but never masquerades as fresh production evidence.
+
+If a validated champion already exists, a challenger must also beat that champion with a paired 95% CI
+above zero on the same genuinely fresh arena before replacement.
+
+The Player Model remains explicitly heuristic/unvalidated. Low-sharing stays outside the Draw Model.

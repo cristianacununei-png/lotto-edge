@@ -7,9 +7,9 @@
   <meta name="apple-mobile-web-app-capable" content="yes"/>
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent"/>
   <meta name="apple-mobile-web-app-title" content="Lotto Edge"/>
-  <link rel="manifest" href="manifest.webmanifest?v=21.1"/>
+  <link rel="manifest" href="manifest.webmanifest?v=21.2"/>
   <link rel="apple-touch-icon" href="icon-192.png"/>
-  <link rel="stylesheet" href="app.css?v=21.1"/>
+  <link rel="stylesheet" href="app.css?v=21.2"/>
   <title>Lotto Edge</title>
 </head>
 <body>
@@ -17,7 +17,7 @@
   <header class="topbar">
     <div>
       <div class="eyebrow" id="gameLabel">UK LOTTO · 6 / 59</div>
-      <div class="title-row"><h1>Lotto Edge</h1><span class="version-badge" id="versionBadge">v21.1</span></div>
+      <div class="title-row"><h1>Lotto Edge</h1><span class="version-badge" id="versionBadge">v21.2</span></div>
     </div>
   </header>
 
@@ -127,9 +127,9 @@
           <option value="1000">1,000 controls</option>
         </select>
 
-        <button id="runFullValidation" class="generate mini">RUN MODEL SEARCH + VALIDATION</button>
+        <button id="runFullValidation" class="generate mini">RUN PRIVATE MODEL VALIDATION</button>
         <p class="validation-note">
-          One run searches signal direction and horizons, all 31 factor combinations, a reserved validation gate, a final champion arena, Lucky Stars and portfolio behaviour.
+          Development searches signal direction, horizons and all 31 factor combinations. One challenger is frozen, then tested once on a private arena that is never used by search.
         </p>
 
         <details class="advanced-tests">
@@ -141,8 +141,7 @@
           <button id="runAblation" class="secondary wide">Run factor ablation</button>
         </details>
         <p class="validation-note">
-          v21.1 production rule: one challenger is selected using development data only, then must survive two reserved gates before promotion.
-          A production validation run is recorded against the current dataset fingerprint so the same reserved data is not casually re-used after a tweak.
+          v21.2 production rule: development output is selection-biased search, not evidence. Promotion depends only on the private final arena. After that arena is spent, production validation stays locked until 150 genuinely new draws exist after the cutoff date.
         </p>
         <div id="holdoutSafetyStatus" class="holdout-safety"></div>
         <div id="backtestStatus" class="status"></div>
@@ -202,6 +201,6 @@
     <button data-screen="settingsScreen"><b>⚙️</b><span>Settings</span></button>
   </nav>
 </div>
-<script src="app.js?v=21.1"></script>
+<script src="app.js?v=21.2"></script>
 </body>
 </html>

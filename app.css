@@ -200,3 +200,19 @@ input[type=file]{width:100%;color:var(--muted);padding:10px 0}
 .holdout-safety.holdout-fresh{border-color:rgba(232,255,84,.45)}
 .holdout-safety.holdout-used{border-color:#555d6b}
 .production-status span strong{color:var(--text)}
+
+
+/* v21.2 holdout integrity */
+.search-warning{
+  border:1px solid #535b69;
+  border-radius:14px;
+  padding:11px;
+  margin:10px 0;
+  background:#0d1017;
+}
+.search-warning b,.search-warning span{display:block}
+.search-warning b{font-size:13px}
+.search-warning span{font-size:10px;color:var(--muted);line-height:1.5;margin-top:4px}
+.selection-bias-note{font-size:10px;color:var(--muted);line-height:1.45}
+.search-only-card{border-style:dashed}
+.private-evidence-card{border-color:rgba(232,255,84,.55)}

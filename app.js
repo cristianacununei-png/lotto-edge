@@ -1,7 +1,7 @@
 
 const $ = s => document.querySelector(s);
 
-const APP_VERSION="21.1.0";
+const APP_VERSION="21.2.0";
 
 async function checkAppVersionInBackground(){
   try{
@@ -114,40 +114,73 @@ function validationLedgerKey(){
   return `lottoEdgeValidationLedger:${activeGame}`;
 }
 
-function currentDatasetFingerprint(){
-  const latest=draws?.[0]?.date||"none";
-  const oldest=draws?.[draws.length-1]?.date||"none";
-  return `${activeGame}|${draws.length}|${latest}|${oldest}`;
-}
+const MIN_FRESH_PRODUCTION_DRAWS=150;
 
 function getValidationLedger(){
   try{
-    return JSON.parse(localStorage.getItem(validationLedgerKey())||"null")||{
-      schema:1,
-      productionRuns:[]
-    };
-  }catch{
-    return {schema:1,productionRuns:[]};
-  }
+    const raw=JSON.parse(localStorage.getItem(validationLedgerKey())||"null");
+    if(raw && Array.isArray(raw.productionRuns)){
+      return {schema:2,productionRuns:raw.productionRuns};
+    }
+  }catch{}
+  return {schema:2,productionRuns:[]};
 }
 
 function saveValidationLedger(ledger){
+  ledger.schema=2;
   localStorage.setItem(validationLedgerKey(),JSON.stringify(ledger));
 }
 
-function productionRunAlreadyUsed(){
-  const fp=currentDatasetFingerprint();
-  const ledger=getValidationLedger();
-  return ledger.productionRuns.some(r=>r.fingerprint===fp);
+function lastProductionRun(){
+  return getValidationLedger().productionRuns[0]||null;
 }
 
-function recordProductionRun(result){
+function lastProductionCutoffDate(){
+  const last=lastProductionRun();
+  // v21.1 migration: its `latest` field is the date at which reserved data was consumed.
+  return normaliseDateValue(last?.cutoffDate||last?.latest||"");
+}
+
+function freshDrawsAfterCutoff(){
+  const cutoff=lastProductionCutoffDate();
+  if(!cutoff)return [];
+  return draws
+    .filter(d=>{
+      const dt=normaliseDateValue(d.date);
+      return dt && dt>cutoff;
+    })
+    .sort((a,b)=>normaliseDateValue(a.date).localeCompare(normaliseDateValue(b.date)));
+}
+
+function productionArenaState(){
+  const last=lastProductionRun();
+  if(!last){
+    return {
+      firstRun:true,
+      ready:draws.length>=850,
+      freshCount:null,
+      required:MIN_FRESH_PRODUCTION_DRAWS,
+      cutoff:null
+    };
+  }
+
+  const fresh=freshDrawsAfterCutoff();
+  return {
+    firstRun:false,
+    ready:fresh.length>=MIN_FRESH_PRODUCTION_DRAWS,
+    freshCount:fresh.length,
+    required:MIN_FRESH_PRODUCTION_DRAWS,
+    cutoff:lastProductionCutoffDate()
+  };
+}
+
+function recordProductionRun(result,cutoffDate,arenaCount){
   const ledger=getValidationLedger();
   ledger.productionRuns.unshift({
-    fingerprint:currentDatasetFingerprint(),
     at:new Date().toISOString(),
+    cutoffDate:normaliseDateValue(cutoffDate),
     drawCount:draws.length,
-    latest:draws?.[0]?.date||null,
+    arenaCount,
     result
   });
   ledger.productionRuns=ledger.productionRuns.slice(0,20);
@@ -1896,17 +1929,27 @@ function compareChallengerToChampion(windowData,challengerTerms,championTerms){
 function renderHoldoutSafetyStatus(){
   const el=$("#holdoutSafetyStatus");
   if(!el)return;
-  const used=productionRunAlreadyUsed();
-  if(used){
-    el.className="holdout-safety holdout-used";
-    el.innerHTML=`
-      <b>Reserved data already used for this exact dataset</b>
-      <span>Do not treat another production validation run as a fresh holdout test. Add materially newer draw history first. Advanced/research tests remain available.</span>`;
-  }else{
+
+  const state=productionArenaState();
+
+  if(state.firstRun){
     el.className="holdout-safety holdout-fresh";
     el.innerHTML=`
-      <b>Reserved production data still fresh for this dataset</b>
-      <span>The next production model-search run will consume the reserved validation gate and final arena for this dataset fingerprint.</span>`;
+      <b>Private production arena has not been consumed</b>
+      <span>The first production search will choose its challenger using older development data only, then spend the newest ${MIN_FRESH_PRODUCTION_DRAWS} draws once as the final arena.</span>`;
+    return;
+  }
+
+  if(state.ready){
+    el.className="holdout-safety holdout-fresh";
+    el.innerHTML=`
+      <b>Fresh production arena ready</b>
+      <span>${state.freshCount} genuinely new draws exist after the previous production cutoff (${state.cutoff}). All of them are unseen by the production challenger search.</span>`;
+  }else{
+    el.className="holdout-safety holdout-used";
+    el.innerHTML=`
+      <b>Production arena locked</b>
+      <span>${state.freshCount}/${state.required} genuinely new draws have accumulated after the previous cutoff (${state.cutoff}). Advanced development/research can continue, but a new production claim is not allowed yet.</span>`;
   }
 }
 
@@ -1932,13 +1975,15 @@ function renderProductionStatus(){
 
 async function runFullValidationSuite(){
   if(draws.length<850){
-    $("#backtestStatus").textContent="v21.1 model search needs at least 850 historical draws.";
+    $("#backtestStatus").textContent="v21.2 model search needs at least 850 historical draws.";
     return;
   }
 
-  if(productionRunAlreadyUsed()){
+  const state=productionArenaState();
+
+  if(!state.firstRun && !state.ready){
     $("#backtestStatus").textContent=
-      "Production validation NOT RUN: the reserved gate/final arena for this exact dataset fingerprint has already been used. Add materially newer draw history before running a fresh production search.";
+      `Production validation NOT RUN: only ${state.freshCount}/${state.required} genuinely new draws exist after the last production cutoff (${state.cutoff}). The private arena remains locked.`;
     renderHoldoutSafetyStatus();
     return;
   }
@@ -1951,139 +1996,124 @@ async function runFullValidationSuite(){
     normaliseDateValue(a.date).localeCompare(normaliseDateValue(b.date))
   );
 
-  const N=chron.length;
+  let devChron=[];
+  let arenaChron=[];
+
+  if(state.firstRun){
+    // First production claim: newest 150 draws are completely untouched.
+    arenaChron=chron.slice(-MIN_FRESH_PRODUCTION_DRAWS);
+    devChron=chron.slice(0,-MIN_FRESH_PRODUCTION_DRAWS);
+  }else{
+    // Subsequent production claims: every arena draw must be genuinely newer
+    // than the previous production cutoff. No overlap is allowed.
+    const cutoff=state.cutoff;
+    devChron=chron.filter(d=>normaliseDateValue(d.date)<=cutoff);
+    arenaChron=chron.filter(d=>normaliseDateValue(d.date)>cutoff);
+  }
+
   const minHistory=300;
-
-  // Reserve newest 150 draws: older half is model gate, newest half is final arena.
-  const reserve=Math.min(150,Math.max(120,Math.floor((N-minHistory)*.10)));
-  const arenaSize=Math.floor(reserve/2);
-  const gateSize=reserve-arenaSize;
-  const devEnd=N-reserve;
-
   const windowCount=6;
-  const windowSize=Math.min(75,Math.floor((devEnd-minHistory)/windowCount));
+  const windowSize=Math.min(75,Math.floor((devChron.length-minHistory)/windowCount));
 
   if(windowSize<45){
-    $("#backtestStatus").textContent="Insufficient pre-reserve data for six independent development windows.";
+    $("#backtestStatus").textContent="Insufficient development history for six search windows.";
     btn.disabled=false;
     return;
   }
 
   const devWindows=[];
   for(let w=windowCount-1;w>=0;w--){
-    const start=devEnd-(w+1)*windowSize;
+    const start=devChron.length-(w+1)*windowSize;
     devWindows.push({start,end:start+windowSize});
   }
 
   // ---------------------------------------------------------
-  // STEP 1 — deterministic feature-variant search
+  // STEP 1 — SEARCH ONLY. Selection-biased by design.
   // ---------------------------------------------------------
   const devData=[];
   for(let w=0;w<devWindows.length;w++){
     $("#backtestStatus").textContent=
-      `v21 step 1/5 · building development window ${w+1}/${devWindows.length}…`;
+      `v21.2 step 1/4 · development search window ${w+1}/${devWindows.length}…`;
     devData.push(await buildWindowObservations(
-      chron,devWindows[w].start,devWindows[w].end,45,`v21-dev-${w}`
+      devChron,devWindows[w].start,devWindows[w].end,45,`v21-2-dev-${w}`
     ));
   }
 
   const variantSelection=selectBestVariantPerFactor(devData);
 
   // ---------------------------------------------------------
-  // STEP 2 — all 31 factor combinations
+  // STEP 2 — search all 31 subsets. Still search, not evidence.
   // ---------------------------------------------------------
-  $("#backtestStatus").textContent="v21 step 2/5 · searching all 31 factor combinations…";
+  $("#backtestStatus").textContent=
+    "v21.2 step 2/4 · searching all 31 factor combinations (development only)…";
   const modelSearch=searchDevelopmentModels(devData,variantSelection);
   const challenger=modelSearch[0];
 
   // ---------------------------------------------------------
-  // STEP 3 — reserved validation gate
+  // STEP 3 — ONE genuinely private final arena.
   // ---------------------------------------------------------
-  $("#backtestStatus").textContent="v21 step 3/5 · reserved validation gate…";
-  const gateStart=devEnd;
-  const gateEnd=devEnd+gateSize;
-  const gateData=await buildWindowObservations(
-    chron,gateStart,gateEnd,75,"v21-gate"
-  );
-  const gate=compareModelToNeutral(gateData,challenger.terms);
+  $("#backtestStatus").textContent=
+    `v21.2 step 3/4 · final private arena (${arenaChron.length} unseen draws)…`;
 
-  // Candidate must show directionally positive performance before arena.
-  const gatePass=
-    gate.n>=55 &&
-    gate.mean>50.5 &&
-    gate.ci.hi>0;
-
-  // ---------------------------------------------------------
-  // STEP 4 — newest final confirmation / champion arena
-  // ---------------------------------------------------------
-  $("#backtestStatus").textContent="v21 step 4/5 · final champion/challenger arena…";
+  // Build observations using a combined chronological stream so each arena
+  // target can use prior arena draws exactly as live walk-forward operation would.
+  const combinedChron=[...devChron,...arenaChron];
+  const arenaStart=devChron.length;
   const arenaData=await buildWindowObservations(
-    chron,gateEnd,N,90,"v21-arena"
+    combinedChron,arenaStart,combinedChron.length,90,"v21-2-private-arena"
   );
+
+  const arenaNeutral=compareModelToNeutral(arenaData,challenger.terms);
 
   const oldChampion=getValidatedModel();
   const oldChampionTerms=championTermsFromModel(oldChampion);
-  const arenaNeutral=compareModelToNeutral(arenaData,challenger.terms);
   const arenaVsChampion=compareChallengerToChampion(
     arenaData,challenger.terms,oldChampionTerms
   );
 
-  // Strong production gate:
-  //  - positive reserved gate
-  //  - positive final arena
-  //  - combined reserved evidence CI clears zero
-  //  - if an existing validated champion exists, challenger must beat it directionally.
-  const pooled=[...gate.values,...arenaNeutral.values];
-  const pooledLift=pooled.map(x=>x-50);
-  const pooledCI=meanCI95(pooledLift);
-
+  // This is the only production evidential gate.
   const arenaPass=
-    arenaNeutral.n>=55 &&
-    arenaNeutral.mean>50.5;
+    arenaNeutral.n>=MIN_FRESH_PRODUCTION_DRAWS &&
+    arenaNeutral.mean>50.5 &&
+    arenaNeutral.ci.lo>0;
 
-  const challengerBeatsChampion=!oldChampionTerms.length ||
-    (arenaVsChampion.diff>0 && arenaVsChampion.ci.hi>0);
+  // If a validated champion exists, replacement requires the challenger to
+  // beat it with its own paired CI above zero on the same genuinely fresh arena.
+  const challengerBeatsChampion=!oldChampionTerms.length || (
+    arenaVsChampion.n>=MIN_FRESH_PRODUCTION_DRAWS &&
+    arenaVsChampion.diff>0 &&
+    arenaVsChampion.ci.lo>0
+  );
 
-  const productionPass=
-    gatePass &&
-    arenaPass &&
-    pooledCI.lo>0 &&
-    challengerBeatsChampion;
+  const productionPass=arenaPass && challengerBeatsChampion;
 
   // ---------------------------------------------------------
-  // STEP 5 — stars + portfolio baseline + production decision
+  // STEP 4 — secondary Stars + save production decision.
   // ---------------------------------------------------------
-  $("#backtestStatus").textContent="v21 step 5/5 · Stars, portfolio baseline and production decision…";
+  $("#backtestStatus").textContent=
+    "v21.2 step 4/4 · secondary Star test and production decision…";
 
   let starStatus="neutral";
   let starLift=null;
 
   if(activeGame==="euromillions"){
-    // Reuse the existing Star research on both reserved blocks.
-    const gateStar=await evaluateValidationWindow(
-      chron,gateStart,gateEnd,50,null,"v21-star-gate"
+    const starEval=await evaluateValidationWindow(
+      combinedChron,arenaStart,combinedChron.length,55,null,"v21-2-star-arena"
     );
-    const arenaStar=await evaluateValidationWindow(
-      chron,gateEnd,N,50,null,"v21-star-arena"
-    );
-    const combinedStars=[
-      ...(gateStar.stars.n?[gateStar.stars.lift]:[]),
-      ...(arenaStar.stars.n?[arenaStar.stars.lift]:[])
-    ];
-    starLift=mean(combinedStars);
-    if(gateStar.stars.mean>50.5 && arenaStar.stars.mean>50.5)starStatus="validated";
-  }
+    starLift=starEval.stars.lift;
 
-  let portfolioBaseline="diversified";
-  const portfolioResults=[];
-  for(const mode of ["diversified","balanced","concentrated"]){
-    const r=await evaluateConcentration(mode,30);
-    portfolioResults.push({mode,...r});
+    // Separate secondary claim: same strict lower-CI requirement.
+    if(
+      starEval.stars.n>=MIN_FRESH_PRODUCTION_DRAWS &&
+      starEval.stars.mean>50.5 &&
+      starEval.stars.ci.lo>0
+    ){
+      starStatus="validated";
+    }
   }
-  portfolioResults.sort((a,b)=>b.score-a.score);
-  if(portfolioResults[0])portfolioBaseline=portfolioResults[0].mode;
 
   const selectedTerms=challenger.terms.map(t=>({...t}));
+
   const newModel={
     schema:21,
     status:productionPass?"validated":"neutral",
@@ -2100,57 +2130,51 @@ async function runFullValidationSuite(){
       selectedSubset:challenger.subset,
       objective:challenger.objective,
       meanLift:challenger.avg,
-      positiveWindows:challenger.positiveWindows
-    },
-
-    variants:Object.fromEntries(
-      Object.entries(variantSelection.selected).map(([k,v])=>[k,v])
-    ),
-
-    gate:{
-      mean:gate.mean,ci:gate.ci,n:gate.n,pass:gatePass
+      positiveWindows:challenger.positiveWindows,
+      label:"selection-biased search output; not evidence"
     },
 
     arena:{
-      mean:arenaNeutral.mean,ci:arenaNeutral.ci,n:arenaNeutral.n,
-      vsChampion:arenaVsChampion,pass:arenaPass
-    },
-
-    pooled:{
-      mean:mean(pooled),ci:pooledCI,n:pooled.length
+      mean:arenaNeutral.mean,
+      ci:arenaNeutral.ci,
+      n:arenaNeutral.n,
+      pass:arenaPass,
+      firstDate:normaliseDateValue(arenaChron[0]?.date),
+      lastDate:normaliseDateValue(arenaChron.at(-1)?.date)
     },
 
     championDecision:{
       previousStatus:oldChampion.status||"none",
-      challengerBeatsChampion
+      challengerBeatsChampion,
+      comparison:arenaVsChampion
     },
 
-    portfolioBaseline
+    portfolioBaseline:"diversified"
   };
 
-  // If challenger fails and the old champion was genuinely schema21 validated,
-  // retain it rather than replacing it with a loser.
+  // A failed challenger never replaces an already validated champion.
   if(!productionPass && oldChampion.schema===21 && oldChampion.status==="validated" && oldChampion.terms?.length){
     saveValidatedModel(oldChampion);
   }else{
     saveValidatedModel(newModel);
   }
 
-  // At this point both reserved blocks have been evaluated, so the production
-  // holdout for this exact dataset fingerprint is considered consumed.
+  // The entire final arena has now been consumed. Future production claims
+  // require 150 draws strictly newer than this cutoff date.
+  const cutoffDate=normaliseDateValue(arenaChron.at(-1)?.date);
   recordProductionRun({
     productionPass,
-    gateMean:gate.mean,
     arenaMean:arenaNeutral.mean,
-    pooledMean:mean(pooled),
-    challenger:selectedTerms.map(termLabel)
-  });
+    arenaCI:arenaNeutral.ci,
+    challenger:selectedTerms.map(termLabel),
+    challengerVsChampion:arenaVsChampion.diff
+  },cutoffDate,arenaChron.length);
 
-  localStorage.setItem(
-    `lottoEdgeCalibratedConcentration:${activeGame}`,
-    portfolioBaseline
-  );
-  saveConcentrationMode("auto");
+  // Neutral production deliberately defaults to broad diversification.
+  if(!productionPass){
+    localStorage.setItem(`lottoEdgeCalibratedConcentration:${activeGame}`,"diversified");
+    saveConcentrationMode("auto");
+  }
 
   const factorRows=Object.entries(variantSelection.detail).map(([factor,d])=>`
     <tr>
@@ -2172,13 +2196,14 @@ async function runFullValidationSuite(){
   `).join("");
 
   const finalSaved=getValidatedModel();
+
   const decision=productionPass
     ? `Challenger promoted: ${selectedTerms.map(termLabel).join(" + ")}.`
-    : (oldChampion.schema===21 && oldChampion.status==="validated"
-        ? "Challenger failed final promotion; previous validated champion retained."
-        : "No challenger cleared both reserved gates. Portfolio Edge remains production mode.");
+    : (oldChampion.schema===21 && oldChampion.status==="validated" && oldChampion.terms?.length
+        ? "Challenger failed the fresh private arena; previous validated champion retained."
+        : "Challenger failed the fresh private arena. Portfolio Edge remains production mode.");
 
-  $("#backtestStatus").textContent="v21 model search complete.";
+  $("#backtestStatus").textContent="v21.2 model search complete.";
 
   $("#backtestResults").innerHTML=`
     <div class="validation-decision ${productionPass?"decision-pass":"decision-neutral"}">
@@ -2186,65 +2211,68 @@ async function runFullValidationSuite(){
       <p>${decision}</p>
     </div>
 
+    <div class="search-warning">
+      <b>Development search output — NOT evidence</b>
+      <span>
+        Normal/inverse direction, four horizons and 31 subsets are deliberately searched for the best-looking development result.
+        Positive development lift is expected from selection. Only the private arena below can support a production claim.
+      </span>
+    </div>
+
     <div class="bt-grid">
-      <div class="bt-card"><b>31</b><small>factor combinations searched</small></div>
-      <div class="bt-card"><b>22</b><small>direction/horizon variants tested</small></div>
-      <div class="bt-card"><b>${gateSize}</b><small>reserved gate draws</small></div>
-      <div class="bt-card"><b>${arenaSize}</b><small>final arena draws</small></div>
-      <div class="bt-card"><b>${gate.n?gate.mean.toFixed(1)+"th":"not run"}</b><small>gate percentile</small></div>
-      <div class="bt-card"><b>${arenaNeutral.n?arenaNeutral.mean.toFixed(1)+"th":"not run"}</b><small>final arena percentile</small></div>
-      <div class="bt-card"><b>${pooled.length?mean(pooled).toFixed(1)+"th":"not run"}</b><small>pooled reserved percentile</small></div>
+      <div class="bt-card"><b>31</b><small>subsets searched</small></div>
+      <div class="bt-card"><b>22</b><small>direction/horizon variants searched</small></div>
+      <div class="bt-card"><b>${devWindows.length}</b><small>development search windows</small></div>
+      <div class="bt-card"><b>${arenaNeutral.n}</b><small>genuinely fresh arena draws</small></div>
+      <div class="bt-card"><b>${arenaNeutral.mean.toFixed(1)}th</b><small>private arena percentile</small></div>
+      <div class="bt-card"><b>${formatSigned(arenaNeutral.ci.lo,1)}</b><small>arena CI lower bound</small></div>
+      <div class="bt-card"><b>${formatSigned(arenaVsChampion.diff,1)}</b><small>challenger vs champion</small></div>
       <div class="bt-card"><b>${finalSaved.status}</b><small>production status</small></div>
     </div>
 
-    <div class="settings-card">
-      <b>Best signal variant per factor</b>
+    <div class="settings-card search-only-card">
+      <b>Search-selected signal variants</b>
+      <p class="selection-bias-note">
+        These values are selection-biased by construction and must not be interpreted as independent findings.
+      </p>
       <table class="bt-table">
-        <tr><th>Factor</th><th>Best development variant</th><th>Mean lift</th><th>Positive windows</th></tr>
+        <tr><th>Factor</th><th>Selected search variant</th><th>Dev lift</th><th>Positive windows</th></tr>
         ${factorRows}
       </table>
     </div>
 
-    <div class="settings-card">
-      <b>Top development models</b>
+    <div class="settings-card search-only-card">
+      <b>Top development search candidates</b>
+      <p class="selection-bias-note">
+        Ranking is useful only to freeze a challenger before the private arena. It is not evidence of predictability.
+      </p>
       <table class="bt-table">
-        <tr><th>#</th><th>Model</th><th>Mean lift</th><th>Positive windows</th><th>Dev score</th></tr>
+        <tr><th>#</th><th>Model</th><th>Dev lift</th><th>Positive windows</th><th>Search score</th></tr>
         ${topModels}
       </table>
     </div>
 
-    <div class="settings-card">
-      <b>Reserved evidence</b>
+    <div class="settings-card private-evidence-card">
+      <b>Private production evidence</b>
       <p class="muted">
-        Gate: ${gate.n?`${gate.mean.toFixed(2)}th percentile · 95% lift CI ${formatCI(gate.ci,2)} · ${gatePass?"directional pass":"fail"}`:"NOT RUN"}.
+        Arena dates: ${normaliseDateValue(arenaChron[0]?.date)} → ${cutoffDate}.
+        None of these ${arenaNeutral.n} draws were available to the challenger search.
       </p>
       <p class="muted">
-        Final arena: ${arenaNeutral.n?`${arenaNeutral.mean.toFixed(2)}th percentile · 95% lift CI ${formatCI(arenaNeutral.ci,2)} · ${arenaPass?"directional pass":"fail"}`:"NOT RUN"}.
+        Challenger vs neutral:
+        ${arenaNeutral.mean.toFixed(2)}th percentile ·
+        95% lift CI ${formatCI(arenaNeutral.ci,2)} ·
+        ${arenaPass?"PRODUCTION PASS":"FAIL"}.
       </p>
       <p class="muted">
-        Pooled reserved evidence: ${mean(pooled).toFixed(2)}th ·
-        95% lift CI ${formatCI(pooledCI,2)}.
-      </p>
-      <p class="muted">
-        Challenger vs current champion in final arena:
+        Challenger vs current champion:
         ${formatSigned(arenaVsChampion.diff,2)} percentile points ·
-        CI ${formatCI(arenaVsChampion.ci,2)}.
-      </p>
-    </div>
-
-    <div class="settings-card">
-      <b>What v21 changed</b>
-      <p class="muted">
-        Development chooses the best normal/inverse direction and horizon for each factor,
-        searches all 31 non-empty factor subsets, and freezes one challenger before any reserved data is used.
-      </p>
-      <p class="muted">
-        A challenger must then survive a validation gate and the newer final arena.
-        The final arena is also where it is compared against an existing validated champion.
+        95% paired CI ${formatCI(arenaVsChampion.ci,2)} ·
+        ${oldChampionTerms.length?(challengerBeatsChampion?"replacement criterion passed":"replacement criterion failed"):"no existing champion"}.
       </p>
       <p class="ci-note">
-        A failed challenger is not tuned against the reserved result. Run the search again only after
-        meaningfully newer draw data has accumulated; repeatedly optimising against the same holdout would invalidate it.
+        This arena is now spent. The next production validation is locked until at least
+        ${MIN_FRESH_PRODUCTION_DRAWS} draws dated after ${cutoffDate} have accumulated.
       </p>
     </div>
   `;
@@ -2700,7 +2728,7 @@ $$(".bottom-nav button").forEach(b=>b.onclick=()=>{
 });
 
 if("serviceWorker" in navigator){
-  navigator.serviceWorker.register("service-worker.js?version=21.1")
+  navigator.serviceWorker.register("service-worker.js?version=21.2")
     .then(reg=>{
       // Check for a newer worker after the app has already rendered.
       setTimeout(()=>reg.update().catch(()=>{}),1500);
