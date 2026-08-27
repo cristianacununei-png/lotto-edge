@@ -7,9 +7,9 @@
   <meta name="apple-mobile-web-app-capable" content="yes"/>
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent"/>
   <meta name="apple-mobile-web-app-title" content="Lotto Edge"/>
-  <link rel="manifest" href="manifest.webmanifest?v=20"/>
+  <link rel="manifest" href="manifest.webmanifest?v=21.1"/>
   <link rel="apple-touch-icon" href="icon-192.png"/>
-  <link rel="stylesheet" href="app.css?v=20"/>
+  <link rel="stylesheet" href="app.css?v=21.1"/>
   <title>Lotto Edge</title>
 </head>
 <body>
@@ -17,7 +17,7 @@
   <header class="topbar">
     <div>
       <div class="eyebrow" id="gameLabel">UK LOTTO · 6 / 59</div>
-      <div class="title-row"><h1>Lotto Edge</h1><span class="version-badge" id="versionBadge">v20</span></div>
+      <div class="title-row"><h1>Lotto Edge</h1><span class="version-badge" id="versionBadge">v21.1</span></div>
     </div>
   </header>
 
@@ -127,10 +127,9 @@
           <option value="1000">1,000 controls</option>
         </select>
 
-        <button id="runFullValidation" class="generate mini">RUN FULL VALIDATION SUITE</button>
+        <button id="runFullValidation" class="generate mini">RUN MODEL SEARCH + VALIDATION</button>
         <p class="validation-note">
-          One run performs six rolling development tests, stable-factor selection, an untouched holdout,
-          Lucky Star validation and portfolio-style calibration, then configures production mode automatically.
+          One run searches signal direction and horizons, all 31 factor combinations, a reserved validation gate, a final champion arena, Lucky Stars and portfolio behaviour.
         </p>
 
         <details class="advanced-tests">
@@ -142,8 +141,10 @@
           <button id="runAblation" class="secondary wide">Run factor ablation</button>
         </details>
         <p class="validation-note">
-          v20 production rule: historical factors cannot influence Validated Edge unless they survive the rolling tests and untouched holdout.
+          v21.1 production rule: one challenger is selected using development data only, then must survive two reserved gates before promotion.
+          A production validation run is recorded against the current dataset fingerprint so the same reserved data is not casually re-used after a tweak.
         </p>
+        <div id="holdoutSafetyStatus" class="holdout-safety"></div>
         <div id="backtestStatus" class="status"></div>
       </div>
       <div id="backtestResults"></div>
@@ -171,8 +172,15 @@
         <p id="integrityStatus" class="muted"></p>
       </div>
       <div class="settings-card">
-        <h3>Validated production model</h3>
+        <h3>Validated production champion</h3>
         <p id="validatedModelStatus" class="muted"></p>
+      </div>
+
+      <div class="settings-card">
+        <h3>Model architecture</h3>
+        <p class="muted"><b>Draw Model</b> — historical signals. It may influence production only after surviving reserved out-of-sample validation.</p>
+        <p class="muted"><b>Player Model</b> — low-sharing heuristic. It estimates whether a combination may be less commonly chosen by other players. It does not change draw probability and is not yet empirically validated.</p>
+        <p class="muted"><b>Portfolio Optimiser</b> — controls overlap, coverage and concentration across multiple lines.</p>
       </div>
       <div class="settings-card">
         <h3>Research model</h3>
@@ -194,6 +202,6 @@
     <button data-screen="settingsScreen"><b>⚙️</b><span>Settings</span></button>
   </nav>
 </div>
-<script src="app.js?v=20"></script>
+<script src="app.js?v=21.1"></script>
 </body>
 </html>

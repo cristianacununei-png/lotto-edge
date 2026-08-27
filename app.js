@@ -1,7 +1,7 @@
 
 const $ = s => document.querySelector(s);
 
-const APP_VERSION="20.0.0";
+const APP_VERSION="21.1.0";
 
 async function checkAppVersionInBackground(){
   try{
@@ -110,6 +110,51 @@ function validatedModelKey(){
   return `lottoEdgeValidatedModel:${activeGame}`;
 }
 
+function validationLedgerKey(){
+  return `lottoEdgeValidationLedger:${activeGame}`;
+}
+
+function currentDatasetFingerprint(){
+  const latest=draws?.[0]?.date||"none";
+  const oldest=draws?.[draws.length-1]?.date||"none";
+  return `${activeGame}|${draws.length}|${latest}|${oldest}`;
+}
+
+function getValidationLedger(){
+  try{
+    return JSON.parse(localStorage.getItem(validationLedgerKey())||"null")||{
+      schema:1,
+      productionRuns:[]
+    };
+  }catch{
+    return {schema:1,productionRuns:[]};
+  }
+}
+
+function saveValidationLedger(ledger){
+  localStorage.setItem(validationLedgerKey(),JSON.stringify(ledger));
+}
+
+function productionRunAlreadyUsed(){
+  const fp=currentDatasetFingerprint();
+  const ledger=getValidationLedger();
+  return ledger.productionRuns.some(r=>r.fingerprint===fp);
+}
+
+function recordProductionRun(result){
+  const ledger=getValidationLedger();
+  ledger.productionRuns.unshift({
+    fingerprint:currentDatasetFingerprint(),
+    at:new Date().toISOString(),
+    drawCount:draws.length,
+    latest:draws?.[0]?.date||null,
+    result
+  });
+  ledger.productionRuns=ledger.productionRuns.slice(0,20);
+  saveValidationLedger(ledger);
+}
+
+
 function emptyPredictiveWeights(){
   return {historical:0,recent:0,overdue:0,pairStrength:0,structure:0,sharing:0};
 }
@@ -117,10 +162,26 @@ function emptyPredictiveWeights(){
 function getValidatedModel(){
   try{
     const m=JSON.parse(localStorage.getItem(validatedModelKey())||"null");
-    if(m && m.schema===20)return m;
+    if(m && m.schema===21)return m;
+
+    // v20 migration: preserve status for display, but require v21 model search
+    // before old weights are treated as production-valid.
+    if(m && m.schema===20){
+      return {
+        schema:21,
+        status:m.status==="neutral"?"neutral":"unvalidated",
+        terms:[],
+        weights:emptyPredictiveWeights(),
+        starStatus:m.starStatus||"unvalidated",
+        starLift:m.starLift??null,
+        validatedAt:m.validatedAt||null,
+        datasetCount:m.datasetCount||0,
+        legacy:true
+      };
+    }
   }catch{}
   return {
-    schema:20,status:"unvalidated",weights:emptyPredictiveWeights(),
+    schema:21,status:"unvalidated",terms:[],weights:emptyPredictiveWeights(),
     starStatus:"unvalidated",starLift:null,validatedAt:null,datasetCount:0
   };
 }
@@ -132,7 +193,7 @@ function saveValidatedModel(model){
 function validatedStatusText(){
   const m=getValidatedModel();
   if(m.status==="validated")
-    return `Predictive model passed holdout · ${Number(m.holdoutMean||50).toFixed(1)}th percentile`;
+    return `Predictive champion active · ${m.terms?.map(termLabel).join(" + ")||"validated model"}`;
   if(m.status==="neutral")
     return "No predictive edge established · Portfolio Edge fallback active";
   return "Validation not run yet · run Full Validation Suite";
@@ -424,6 +485,22 @@ function buildAnalysis(history=draws){
   const recent=Array(cfg.max+1).fill(0);
   history.slice(0,recentN).forEach(d=>d.numbers.forEach(n=>recent[n]++));
 
+  // v21: deterministic horizon research. These are built from past data only.
+  const horizonList=[20,50,100,200];
+  const recentByHorizon={};
+  const overdueByHorizon={};
+
+  for(const h of horizonList){
+    const arr=Array(cfg.max+1).fill(0);
+    history.slice(0,Math.min(h,history.length))
+      .forEach(d=>d.numbers.forEach(n=>arr[n]++));
+    recentByHorizon[h]=arr;
+
+    const gap=Array(cfg.max+1).fill(0);
+    for(let n=1;n<=cfg.max;n++)gap[n]=Math.min(last[n],h);
+    overdueByHorizon[h]=gap;
+  }
+
   const sums=history.map(d=>d.numbers.reduce((a,b)=>a+b,0));
   const odds=history.map(d=>d.numbers.filter(n=>n%2).length);
   const lows=history.map(d=>d.numbers.filter(n=>n<=cfg.max/2).length);
@@ -432,7 +509,8 @@ function buildAnalysis(history=draws){
   const pairVals=Object.values(pairs),pm=mean(pairVals),psd=Math.sqrt(mean(pairVals.map(x=>(x-pm)**2)))||1;
 
   const result={
-    freq,last,pairs,recent,starFreq:sf,starLast:sl,
+    freq,last,pairs,recent,recentByHorizon,overdueByHorizon,
+    starFreq:sf,starLast:sl,
     sumMean:sm,sumStd:ssd,
     oddMode:mode(odds,Math.floor(cfg.picks/2)),
     lowMode:mode(lows,Math.floor(cfg.picks/2)),
@@ -536,6 +614,57 @@ function modelScore(line,a,cfg){
   };
 }
 
+
+const MODEL_FACTOR_LABELS={
+  historical:"History",
+  recent:"Recent",
+  overdue:"Overdue",
+  pairStrength:"Pairs",
+  structure:"Structure"
+};
+
+function rawComponentForSpec(line,a,cfg,spec,baseDetail=null){
+  const d=baseDetail||modelScore(line,a,cfg);
+  let value=50;
+
+  if(spec.factor==="historical"){
+    value=d.historical;
+  }else if(spec.factor==="pairStrength"){
+    value=d.pairStrength;
+  }else if(spec.factor==="structure"){
+    value=d.structure;
+  }else if(spec.factor==="recent"){
+    const h=spec.horizon||50;
+    const arr=a.recentByHorizon?.[h]||a.recent;
+    value=normZ(mean(line.map(n=>zFromArray(arr,n))));
+  }else if(spec.factor==="overdue"){
+    const h=spec.horizon||50;
+    const arr=a.overdueByHorizon?.[h]||a.last;
+    value=normZ(mean(line.map(n=>zFromArray(arr,n))));
+  }
+
+  if(spec.direction===-1)value=100-value;
+  return Math.max(0,Math.min(100,value));
+}
+
+function scoreFromTerms(line,a,cfg,terms){
+  if(!terms?.length)return 50;
+  const base=modelScore(line,a,cfg);
+  const weighted=terms.reduce((s,t)=>{
+    const w=t.weight??(1/terms.length);
+    return s+rawComponentForSpec(line,a,cfg,t,base)*w;
+  },0);
+  const total=terms.reduce((s,t)=>s+(t.weight??(1/terms.length)),0)||1;
+  return Math.max(0,Math.min(100,weighted/total));
+}
+
+function termLabel(t){
+  const base=MODEL_FACTOR_LABELS[t.factor]||t.factor;
+  const h=t.horizon?` ${t.horizon}`:"";
+  const dir=t.direction===-1?" inverse":"";
+  return `${base}${h}${dir}`;
+}
+
 function weightedPredictiveScore(detail,weights){
   const keys=PREDICTIVE_FACTORS.filter(k=>(weights[k]||0)>0);
   const total=keys.reduce((s,k)=>s+(weights[k]||0),0);
@@ -546,27 +675,32 @@ function weightedPredictiveScore(detail,weights){
 function validatedScore(line,a,cfg){
   const base=modelScore(line,a,cfg);
   const vm=getValidatedModel();
-  const predictive=vm.status==="validated"
-    ? weightedPredictiveScore(base,vm.weights)
+  const predictive=(vm.status==="validated" && vm.terms?.length)
+    ? scoreFromTerms(line,a,cfg,vm.terms)
     : 50;
+
+  const termWeights={historical:0,recent:0,overdue:0,pairStrength:0,structure:0,sharing:0};
+  for(const t of vm.terms||[])termWeights[t.factor]=(termWeights[t.factor]||0)+(t.weight||0);
 
   return {
     ...base,
     score:predictive,
     objectiveScore:vm.status==="validated"
-      ? .84*predictive+.16*base.sharing
+      ? .88*predictive+.12*base.sharing
       : base.sharing,
     payoutScore:base.sharing,
     validationStatus:vm.status,
-    weights:vm.weights,
+    weights:termWeights,
+    validatedTerms:vm.terms||[],
     reasons:vm.status==="validated"
       ? [
-          "Predictive weighting uses only factors that survived rolling development tests and the untouched holdout.",
-          `Low-sharing is ${Math.round(base.sharing)}/100 and is used only for portfolio/prize-sharing optimisation.`
+          `Production model: ${(vm.terms||[]).map(termLabel).join(" + ")}.`,
+          `This challenger passed both the reserved validation gate and final confirmation arena.`,
+          `Low-sharing (${Math.round(base.sharing)}/100) remains outside draw prediction.`
         ]
       : [
-          "No historical predictor has cleared the production validation gate for this game.",
-          "This line is selected for portfolio coverage and lower-sharing-risk characteristics, not claimed predictive advantage."
+          "No predictive challenger has cleared the v21 production gates for this game.",
+          "This line is selected for portfolio coverage and the current low-sharing heuristic, not claimed predictive advantage. The low-sharing heuristic itself has not yet been empirically validated against player-selection data."
         ]
   };
 }
@@ -1059,12 +1193,10 @@ function renderPicks(items){
           </div>
 
           <div class="weight-note">
-            Predictive weights: history ${Math.round((d.weights.historical||0)*100)}% ·
-            recent ${Math.round((d.weights.recent||0)*100)}% ·
-            pairs ${Math.round((d.weights.pairStrength||0)*100)}% ·
-            structure ${Math.round((d.weights.structure||0)*100)}% ·
-            overdue ${Math.round((d.weights.overdue||0)*100)}%.
-            Low-sharing is excluded from prediction.
+            ${d.validatedTerms?.length
+              ? `Validated model: ${d.validatedTerms.map(t=>`${termLabel(t)} ${Math.round((t.weight||0)*100)}%`).join(" · ")}.`
+              : `No validated predictive terms active.`}
+            Low-sharing is excluded from draw prediction.
           </div>
         </div>`:""}
     </div>`;
@@ -1526,10 +1658,6 @@ function starMaxForDraw(date){
   return 12;
 }
 
-function componentValue(detail,key){
-  return Number(detail?.[key]??50);
-}
-
 function midRankPct(value,controls){
   if(!controls.length)return 50;
   const below=controls.filter(x=>x<value).length;
@@ -1537,102 +1665,249 @@ function midRankPct(value,controls){
   return 100*(below+.5*tied)/controls.length;
 }
 
-function combinedComponentScore(detail,weights){
-  const keys=PREDICTIVE_FACTORS.filter(k=>(weights[k]||0)>0);
-  const total=keys.reduce((s,k)=>s+(weights[k]||0),0);
-  if(!total)return 50;
-  return keys.reduce((s,k)=>s+componentValue(detail,k)*(weights[k]||0),0)/total;
+function candidateVariantSpecs(){
+  const out=[
+    {factor:"historical",direction:1},
+    {factor:"historical",direction:-1},
+    {factor:"pairStrength",direction:1},
+    {factor:"pairStrength",direction:-1},
+    {factor:"structure",direction:1},
+    {factor:"structure",direction:-1}
+  ];
+
+  for(const horizon of [20,50,100,200]){
+    out.push({factor:"recent",horizon,direction:1});
+    out.push({factor:"recent",horizon,direction:-1});
+    out.push({factor:"overdue",horizon,direction:1});
+    out.push({factor:"overdue",horizon,direction:-1});
+  }
+  return out;
 }
 
-async function evaluateValidationWindow(chron,start,end,samples=55,weights=null,label="window"){
+async function buildWindowObservations(chron,start,end,controlsPerDraw,label){
   const cfg=GAMES[activeGame];
-  const factorValues={};
-  PREDICTIVE_FACTORS.forEach(k=>factorValues[k]=[]);
-  const combined=[];
-  const starPcts=[];
+  const specs=candidateVariantSpecs();
+  const observations=[];
 
   for(let i=start;i<end;i++){
     const target=chron[i];
     const history=chron.slice(0,i).reverse();
-    if(history.length<120)continue;
+    if(history.length<150)continue;
 
     const a=buildAnalysis(history);
-    const targetDetail=modelScore(target.numbers,a,cfg);
-    const rng=seededRng(hashSeed(`${activeGame}|${target.date}|${label}`));
     const maxN=ruleMaxForDraw(activeGame,target.date);
+    const rng=seededRng(hashSeed(`${activeGame}|${target.date}|${label}`));
 
-    const controlDetails=[];
-    for(let c=0;c<samples;c++){
-      controlDetails.push(modelScore(sample(maxN,cfg.picks,rng),a,cfg));
+    const targetBase=modelScore(target.numbers,a,cfg);
+    const targetValues={};
+    for(const s of specs){
+      const id=JSON.stringify(s);
+      targetValues[id]=rawComponentForSpec(target.numbers,a,cfg,s,targetBase);
     }
 
-    for(const key of PREDICTIVE_FACTORS){
-      factorValues[key].push(midRankPct(
-        componentValue(targetDetail,key),
-        controlDetails.map(d=>componentValue(d,key))
-      ));
-    }
-
-    if(weights){
-      combined.push(midRankPct(
-        combinedComponentScore(targetDetail,weights),
-        controlDetails.map(d=>combinedComponentScore(d,weights))
-      ));
-    }
-
-    if(cfg.stars && (target.stars||[]).length===2){
-      const sm=starMaxForDraw(target.date);
-      const ranked=starPool(a,"Edge AI",{...cfg,starMax:sm});
-      const starValue=new Map(ranked.map(x=>[x.s,x.value]));
-      const targetValue=(starValue.get(target.stars[0])||50)+(starValue.get(target.stars[1])||50);
-      const controls=[];
-      for(let s1=1;s1<=sm;s1++)for(let s2=s1+1;s2<=sm;s2++){
-        controls.push((starValue.get(s1)||50)+(starValue.get(s2)||50));
+    const controls=[];
+    for(let c=0;c<controlsPerDraw;c++){
+      const line=sample(maxN,cfg.picks,rng);
+      const base=modelScore(line,a,cfg);
+      const values={};
+      for(const s of specs){
+        values[JSON.stringify(s)]=rawComponentForSpec(line,a,cfg,s,base);
       }
-      starPcts.push(midRankPct(targetValue,controls));
+      controls.push(values);
     }
 
-    if((i-start)%8===0)await new Promise(r=>setTimeout(r,0));
+    observations.push({
+      date:target.date,
+      targetValues,
+      controls
+    });
+
+    if((i-start)%6===0)await new Promise(r=>setTimeout(r,0));
   }
 
-  const factors={};
-  for(const key of PREDICTIVE_FACTORS){
-    const vals=factorValues[key];
-    const lifts=vals.map(x=>x-50);
-    factors[key]={
-      mean:mean(vals),lift:mean(lifts),ci:meanCI95(lifts),
-      positiveRate:vals.length?vals.filter(x=>x>50).length/vals.length:0,
-      n:vals.length
-    };
-  }
+  return {specs,observations};
+}
 
-  const combinedLifts=combined.map(x=>x-50);
-  const starLifts=starPcts.map(x=>x-50);
-
+function variantWindowPerformance(windowData,spec){
+  const id=JSON.stringify(spec);
+  const pcts=windowData.observations.map(o=>
+    midRankPct(o.targetValues[id],o.controls.map(c=>c[id]))
+  );
   return {
-    factors,
-    combined:{mean:mean(combined),lift:mean(combinedLifts),ci:meanCI95(combinedLifts),n:combined.length},
-    stars:{mean:mean(starPcts),lift:mean(starLifts),ci:meanCI95(starLifts),n:starPcts.length}
+    mean:mean(pcts),
+    lift:mean(pcts)-50,
+    ci:meanCI95(pcts.map(x=>x-50)),
+    positive:pcts.filter(x=>x>50).length,
+    n:pcts.length
   };
 }
 
-function deriveStableWeights(windowReports){
-  const stats={};
-  for(const key of PREDICTIVE_FACTORS){
-    const lifts=windowReports.map(w=>w.factors[key].lift);
-    const positive=lifts.filter(x=>x>0).length;
-    const avg=mean(lifts);
-    const ci=meanCI95(lifts);
-    const stable=avg>0.35 && positive>=Math.ceil(windowReports.length*.67);
-    stats[key]={avgLift:avg,positiveWindows:positive,totalWindows:lifts.length,ci,stable};
+function selectBestVariantPerFactor(windowDataList){
+  const specs=candidateVariantSpecs();
+  const factors=["historical","recent","overdue","pairStrength","structure"];
+  const selected={};
+  const detail={};
+
+  for(const factor of factors){
+    const candidates=specs.filter(s=>s.factor===factor);
+    let best=null;
+
+    for(const spec of candidates){
+      const perWindow=windowDataList.map(w=>variantWindowPerformance(w,spec));
+      const lifts=perWindow.map(x=>x.lift);
+      const avg=mean(lifts);
+      const sd=Math.sqrt(mean(lifts.map(x=>(x-avg)**2)))||0;
+      const positiveWindows=lifts.filter(x=>x>0).length;
+      const worst=Math.min(...lifts);
+
+      // Development objective deliberately balances average lift and stability.
+      const objective=avg-.28*sd+.08*worst+.20*positiveWindows;
+
+      const row={spec,perWindow,avg,sd,positiveWindows,worst,objective};
+      if(!best || row.objective>best.objective)best=row;
+    }
+
+    selected[factor]=best.spec;
+    detail[factor]=best;
   }
 
-  const weights=emptyPredictiveWeights();
-  const eligible=PREDICTIVE_FACTORS.filter(k=>stats[k].stable);
-  const total=eligible.reduce((s,k)=>s+Math.max(.01,stats[k].avgLift),0);
-  for(const k of eligible)weights[k]=Math.max(.01,stats[k].avgLift)/total;
+  return {selected,detail};
+}
 
-  return {weights,stats,eligible};
+function allFactorSubsets(){
+  const factors=["historical","recent","overdue","pairStrength","structure"];
+  const out=[];
+  for(let mask=1;mask<(1<<factors.length);mask++){
+    const arr=[];
+    for(let i=0;i<factors.length;i++)if(mask&(1<<i))arr.push(factors[i]);
+    out.push(arr);
+  }
+  return out;
+}
+
+function termsForSubset(subset,variantSelection,variantDetail){
+  const raw=subset.map(f=>{
+    const reliability=Math.max(.10,variantDetail[f].avg+2);
+    return {...variantSelection[f],weight:reliability};
+  });
+  const total=raw.reduce((s,t)=>s+t.weight,0)||1;
+  return raw.map(t=>({...t,weight:t.weight/total}));
+}
+
+function scoreObservationWithTerms(obs,terms){
+  const target=terms.reduce((s,t)=>
+    s+(obs.targetValues[JSON.stringify({...t,weight:undefined})]??50)*t.weight,0
+  );
+
+  const controls=obs.controls.map(c=>
+    terms.reduce((s,t)=>
+      s+(c[JSON.stringify({...t,weight:undefined})]??50)*t.weight,0
+    )
+  );
+  return midRankPct(target,controls);
+}
+
+function specKeyWithoutWeight(t){
+  const x={factor:t.factor,direction:t.direction};
+  if(t.horizon)x.horizon=t.horizon;
+  return JSON.stringify(x);
+}
+
+function scoreObservationWithTermsSafe(obs,terms){
+  const target=terms.reduce((s,t)=>
+    s+(obs.targetValues[specKeyWithoutWeight(t)]??50)*t.weight,0
+  );
+  const controls=obs.controls.map(c=>
+    terms.reduce((s,t)=>s+(c[specKeyWithoutWeight(t)]??50)*t.weight,0)
+  );
+  return midRankPct(target,controls);
+}
+
+function evaluateModelOnWindow(windowData,terms){
+  const pcts=windowData.observations.map(o=>scoreObservationWithTermsSafe(o,terms));
+  const lifts=pcts.map(x=>x-50);
+  return {
+    mean:mean(pcts),
+    lift:mean(lifts),
+    ci:meanCI95(lifts),
+    n:pcts.length
+  };
+}
+
+function searchDevelopmentModels(windowDataList,selection){
+  const rows=[];
+
+  for(const subset of allFactorSubsets()){
+    const terms=termsForSubset(subset,selection.selected,selection.detail);
+    const perWindow=windowDataList.map(w=>evaluateModelOnWindow(w,terms));
+    const lifts=perWindow.map(x=>x.lift);
+    const avg=mean(lifts);
+    const sd=Math.sqrt(mean(lifts.map(x=>(x-avg)**2)))||0;
+    const positiveWindows=lifts.filter(x=>x>0).length;
+    const worst=Math.min(...lifts);
+
+    // Model-complexity penalty keeps development search conservative.
+    const complexityPenalty=Math.max(0,subset.length-2)*.20;
+    const objective=avg-.32*sd+.10*worst+.28*positiveWindows-complexityPenalty;
+
+    rows.push({
+      subset,terms,perWindow,avg,sd,positiveWindows,worst,
+      objective
+    });
+  }
+
+  rows.sort((a,b)=>b.objective-a.objective);
+  return rows;
+}
+
+function compareModelToNeutral(windowData,terms){
+  const pcts=windowData.observations.map(o=>scoreObservationWithTermsSafe(o,terms));
+  const lifts=pcts.map(x=>x-50);
+  return {
+    mean:mean(pcts),
+    lift:mean(lifts),
+    ci:meanCI95(lifts),
+    n:pcts.length,
+    values:pcts
+  };
+}
+
+function championTermsFromModel(model){
+  return model?.status==="validated" && model?.terms?.length ? model.terms : [];
+}
+
+function compareChallengerToChampion(windowData,challengerTerms,championTerms){
+  const challenger=windowData.observations.map(o=>scoreObservationWithTermsSafe(o,challengerTerms));
+  const champion=championTerms?.length
+    ? windowData.observations.map(o=>scoreObservationWithTermsSafe(o,championTerms))
+    : Array(challenger.length).fill(50);
+
+  const diff=challenger.map((x,i)=>x-champion[i]);
+  return {
+    challengerMean:mean(challenger),
+    championMean:mean(champion),
+    diff:mean(diff),
+    ci:meanCI95(diff),
+    n:diff.length
+  };
+}
+
+
+function renderHoldoutSafetyStatus(){
+  const el=$("#holdoutSafetyStatus");
+  if(!el)return;
+  const used=productionRunAlreadyUsed();
+  if(used){
+    el.className="holdout-safety holdout-used";
+    el.innerHTML=`
+      <b>Reserved data already used for this exact dataset</b>
+      <span>Do not treat another production validation run as a fresh holdout test. Add materially newer draw history first. Advanced/research tests remain available.</span>`;
+  }else{
+    el.className="holdout-safety holdout-fresh";
+    el.innerHTML=`
+      <b>Reserved production data still fresh for this dataset</b>
+      <span>The next production model-search run will consume the reserved validation gate and final arena for this dataset fingerprint.</span>`;
+  }
 }
 
 function renderProductionStatus(){
@@ -1641,14 +1916,30 @@ function renderProductionStatus(){
   const m=getValidatedModel();
   const cls=m.status==="validated"?"status-good":m.status==="neutral"?"status-warn":"status-neutral";
   el.className=`production-status ${cls}`;
+  const drawStatus=m.status==="validated"
+    ? `validated · ${(m.terms||[]).map(termLabel).join(" + ")}`
+    : m.status==="neutral"
+      ? "no predictive edge established"
+      : "not validated";
+
   el.innerHTML=`
-    <b>${m.status==="validated"?"Validated predictive model":m.status==="neutral"?"Portfolio Edge fallback":"Validated Edge not yet tested"}</b>
+    <b>${m.status==="validated"?"Validated Edge active":m.status==="neutral"?"Portfolio Edge active":"Validated Edge not yet tested"}</b>
+    <span><strong>Draw Model:</strong> ${drawStatus}</span>
+    <span><strong>Player Model:</strong> heuristic / not yet empirically validated</span>
+    <span><strong>Portfolio Optimiser:</strong> active</span>
     <span>${validatedStatusText()}</span>`;
 }
 
 async function runFullValidationSuite(){
-  if(draws.length<700){
-    $("#backtestStatus").textContent="Full validation needs at least 700 historical draws.";
+  if(draws.length<850){
+    $("#backtestStatus").textContent="v21.1 model search needs at least 850 historical draws.";
+    return;
+  }
+
+  if(productionRunAlreadyUsed()){
+    $("#backtestStatus").textContent=
+      "Production validation NOT RUN: the reserved gate/final arena for this exact dataset fingerprint has already been used. Add materially newer draw history before running a fresh production search.";
+    renderHoldoutSafetyStatus();
     return;
   }
 
@@ -1656,53 +1947,133 @@ async function runFullValidationSuite(){
   btn.disabled=true;
   $("#backtestResults").innerHTML="";
 
-  const chron=[...draws].sort((a,b)=>normaliseDateValue(a.date).localeCompare(normaliseDateValue(b.date)));
+  const chron=[...draws].sort((a,b)=>
+    normaliseDateValue(a.date).localeCompare(normaliseDateValue(b.date))
+  );
+
   const N=chron.length;
-  const minHistory=250;
-  const holdoutSize=Math.min(150,Math.max(100,Math.floor((N-minHistory)*.10)));
-  const devEnd=N-holdoutSize;
+  const minHistory=300;
+
+  // Reserve newest 150 draws: older half is model gate, newest half is final arena.
+  const reserve=Math.min(150,Math.max(120,Math.floor((N-minHistory)*.10)));
+  const arenaSize=Math.floor(reserve/2);
+  const gateSize=reserve-arenaSize;
+  const devEnd=N-reserve;
+
   const windowCount=6;
   const windowSize=Math.min(75,Math.floor((devEnd-minHistory)/windowCount));
 
-  if(windowSize<40){
-    $("#backtestStatus").textContent="Not enough pre-holdout history for six rolling windows.";
+  if(windowSize<45){
+    $("#backtestStatus").textContent="Insufficient pre-reserve data for six independent development windows.";
     btn.disabled=false;
     return;
   }
 
-  const windows=[];
+  const devWindows=[];
   for(let w=windowCount-1;w>=0;w--){
     const start=devEnd-(w+1)*windowSize;
-    windows.push({start,end:start+windowSize});
+    devWindows.push({start,end:start+windowSize});
   }
 
-  const reports=[];
-  for(let w=0;w<windows.length;w++){
-    $("#backtestStatus").textContent=`Full validation 1/4 · development window ${w+1}/${windows.length}…`;
-    reports.push(await evaluateValidationWindow(
-      chron,windows[w].start,windows[w].end,55,null,`dev-${w}`
+  // ---------------------------------------------------------
+  // STEP 1 — deterministic feature-variant search
+  // ---------------------------------------------------------
+  const devData=[];
+  for(let w=0;w<devWindows.length;w++){
+    $("#backtestStatus").textContent=
+      `v21 step 1/5 · building development window ${w+1}/${devWindows.length}…`;
+    devData.push(await buildWindowObservations(
+      chron,devWindows[w].start,devWindows[w].end,45,`v21-dev-${w}`
     ));
   }
 
-  const derived=deriveStableWeights(reports);
+  const variantSelection=selectBestVariantPerFactor(devData);
 
-  $("#backtestStatus").textContent="Full validation 2/4 · untouched holdout…";
-  const holdout=await evaluateValidationWindow(
-    chron,devEnd,N,75,derived.eligible.length?derived.weights:null,"holdout"
+  // ---------------------------------------------------------
+  // STEP 2 — all 31 factor combinations
+  // ---------------------------------------------------------
+  $("#backtestStatus").textContent="v21 step 2/5 · searching all 31 factor combinations…";
+  const modelSearch=searchDevelopmentModels(devData,variantSelection);
+  const challenger=modelSearch[0];
+
+  // ---------------------------------------------------------
+  // STEP 3 — reserved validation gate
+  // ---------------------------------------------------------
+  $("#backtestStatus").textContent="v21 step 3/5 · reserved validation gate…";
+  const gateStart=devEnd;
+  const gateEnd=devEnd+gateSize;
+  const gateData=await buildWindowObservations(
+    chron,gateStart,gateEnd,75,"v21-gate"
+  );
+  const gate=compareModelToNeutral(gateData,challenger.terms);
+
+  // Candidate must show directionally positive performance before arena.
+  const gatePass=
+    gate.n>=55 &&
+    gate.mean>50.5 &&
+    gate.ci.hi>0;
+
+  // ---------------------------------------------------------
+  // STEP 4 — newest final confirmation / champion arena
+  // ---------------------------------------------------------
+  $("#backtestStatus").textContent="v21 step 4/5 · final champion/challenger arena…";
+  const arenaData=await buildWindowObservations(
+    chron,gateEnd,N,90,"v21-arena"
   );
 
-  const holdoutValidated=
-    derived.eligible.length>0 &&
-    holdout.combined.n>=80 &&
-    holdout.combined.mean>50.5 &&
-    holdout.combined.ci.lo>0;
+  const oldChampion=getValidatedModel();
+  const oldChampionTerms=championTermsFromModel(oldChampion);
+  const arenaNeutral=compareModelToNeutral(arenaData,challenger.terms);
+  const arenaVsChampion=compareChallengerToChampion(
+    arenaData,challenger.terms,oldChampionTerms
+  );
 
-  const starValidated=
-    holdout.stars.n>=80 &&
-    holdout.stars.mean>50.5 &&
-    holdout.stars.ci.lo>0;
+  // Strong production gate:
+  //  - positive reserved gate
+  //  - positive final arena
+  //  - combined reserved evidence CI clears zero
+  //  - if an existing validated champion exists, challenger must beat it directionally.
+  const pooled=[...gate.values,...arenaNeutral.values];
+  const pooledLift=pooled.map(x=>x-50);
+  const pooledCI=meanCI95(pooledLift);
 
-  $("#backtestStatus").textContent="Full validation 3/4 · portfolio style check…";
+  const arenaPass=
+    arenaNeutral.n>=55 &&
+    arenaNeutral.mean>50.5;
+
+  const challengerBeatsChampion=!oldChampionTerms.length ||
+    (arenaVsChampion.diff>0 && arenaVsChampion.ci.hi>0);
+
+  const productionPass=
+    gatePass &&
+    arenaPass &&
+    pooledCI.lo>0 &&
+    challengerBeatsChampion;
+
+  // ---------------------------------------------------------
+  // STEP 5 — stars + portfolio baseline + production decision
+  // ---------------------------------------------------------
+  $("#backtestStatus").textContent="v21 step 5/5 · Stars, portfolio baseline and production decision…";
+
+  let starStatus="neutral";
+  let starLift=null;
+
+  if(activeGame==="euromillions"){
+    // Reuse the existing Star research on both reserved blocks.
+    const gateStar=await evaluateValidationWindow(
+      chron,gateStart,gateEnd,50,null,"v21-star-gate"
+    );
+    const arenaStar=await evaluateValidationWindow(
+      chron,gateEnd,N,50,null,"v21-star-arena"
+    );
+    const combinedStars=[
+      ...(gateStar.stars.n?[gateStar.stars.lift]:[]),
+      ...(arenaStar.stars.n?[arenaStar.stars.lift]:[])
+    ];
+    starLift=mean(combinedStars);
+    if(gateStar.stars.mean>50.5 && arenaStar.stars.mean>50.5)starStatus="validated";
+  }
+
   let portfolioBaseline="diversified";
   const portfolioResults=[];
   for(const mode of ["diversified","balanced","concentrated"]){
@@ -1712,97 +2083,178 @@ async function runFullValidationSuite(){
   portfolioResults.sort((a,b)=>b.score-a.score);
   if(portfolioResults[0])portfolioBaseline=portfolioResults[0].mode;
 
-  $("#backtestStatus").textContent="Full validation 4/4 · production decision…";
-
-  const model={
-    schema:20,
-    status:holdoutValidated?"validated":"neutral",
-    weights:holdoutValidated?derived.weights:emptyPredictiveWeights(),
-    starStatus:starValidated?"validated":"neutral",
-    starLift:holdout.stars.lift,
+  const selectedTerms=challenger.terms.map(t=>({...t}));
+  const newModel={
+    schema:21,
+    status:productionPass?"validated":"neutral",
+    terms:productionPass?selectedTerms:[],
+    weights:emptyPredictiveWeights(),
+    starStatus,
+    starLift,
     validatedAt:new Date().toISOString(),
     datasetCount:draws.length,
-    holdoutMean:holdout.combined.mean,
-    holdoutCI:holdout.combined.ci,
-    holdoutN:holdout.combined.n,
-    factorStats:derived.stats,
-    eligibleFactors:derived.eligible,
-    portfolioBaseline,
-    developmentWindows:reports.length,
-    windowSize,
-    holdoutSize
+
+    development:{
+      windows:devWindows.length,
+      windowSize,
+      selectedSubset:challenger.subset,
+      objective:challenger.objective,
+      meanLift:challenger.avg,
+      positiveWindows:challenger.positiveWindows
+    },
+
+    variants:Object.fromEntries(
+      Object.entries(variantSelection.selected).map(([k,v])=>[k,v])
+    ),
+
+    gate:{
+      mean:gate.mean,ci:gate.ci,n:gate.n,pass:gatePass
+    },
+
+    arena:{
+      mean:arenaNeutral.mean,ci:arenaNeutral.ci,n:arenaNeutral.n,
+      vsChampion:arenaVsChampion,pass:arenaPass
+    },
+
+    pooled:{
+      mean:mean(pooled),ci:pooledCI,n:pooled.length
+    },
+
+    championDecision:{
+      previousStatus:oldChampion.status||"none",
+      challengerBeatsChampion
+    },
+
+    portfolioBaseline
   };
 
-  saveValidatedModel(model);
-  localStorage.setItem(`lottoEdgeCalibratedConcentration:${activeGame}`,portfolioBaseline);
+  // If challenger fails and the old champion was genuinely schema21 validated,
+  // retain it rather than replacing it with a loser.
+  if(!productionPass && oldChampion.schema===21 && oldChampion.status==="validated" && oldChampion.terms?.length){
+    saveValidatedModel(oldChampion);
+  }else{
+    saveValidatedModel(newModel);
+  }
+
+  // At this point both reserved blocks have been evaluated, so the production
+  // holdout for this exact dataset fingerprint is considered consumed.
+  recordProductionRun({
+    productionPass,
+    gateMean:gate.mean,
+    arenaMean:arenaNeutral.mean,
+    pooledMean:mean(pooled),
+    challenger:selectedTerms.map(termLabel)
+  });
+
+  localStorage.setItem(
+    `lottoEdgeCalibratedConcentration:${activeGame}`,
+    portfolioBaseline
+  );
   saveConcentrationMode("auto");
 
-  const factorLabels={
-    historical:"Long-term history",recent:"Recent form",overdue:"Overdue",
-    pairStrength:"Pair strength",structure:"Structure"
-  };
+  const factorRows=Object.entries(variantSelection.detail).map(([factor,d])=>`
+    <tr>
+      <td>${MODEL_FACTOR_LABELS[factor]}</td>
+      <td>${termLabel(d.spec)}</td>
+      <td>${formatSigned(d.avg,2)} pts</td>
+      <td>${d.positiveWindows}/${devWindows.length}</td>
+    </tr>
+  `).join("");
 
-  const rows=PREDICTIVE_FACTORS.map(k=>{
-    const s=derived.stats[k];
-    return `<tr>
-      <td>${factorLabels[k]}</td>
-      <td>${formatSigned(s.avgLift,2)} pts</td>
-      <td>${s.positiveWindows}/${s.totalWindows}</td>
-      <td>${s.stable?"stable":"not stable"}</td>
-    </tr>`;
-  }).join("");
+  const topModels=modelSearch.slice(0,5).map((m,i)=>`
+    <tr>
+      <td>${i+1}</td>
+      <td>${m.terms.map(termLabel).join(" + ")}</td>
+      <td>${formatSigned(m.avg,2)} pts</td>
+      <td>${m.positiveWindows}/${devWindows.length}</td>
+      <td>${m.objective.toFixed(2)}</td>
+    </tr>
+  `).join("");
 
-  const decision=model.status==="validated"
-    ? `Predictive model PASSED the untouched holdout. Production factors: ${model.eligibleFactors.map(k=>factorLabels[k]).join(", ")}.`
-    : `No predictive model cleared the holdout gate. Validated Edge now uses Portfolio Edge: neutral draw selection + coverage + low-sharing optimisation.`;
+  const finalSaved=getValidatedModel();
+  const decision=productionPass
+    ? `Challenger promoted: ${selectedTerms.map(termLabel).join(" + ")}.`
+    : (oldChampion.schema===21 && oldChampion.status==="validated"
+        ? "Challenger failed final promotion; previous validated champion retained."
+        : "No challenger cleared both reserved gates. Portfolio Edge remains production mode.");
 
-  $("#backtestStatus").textContent="Full validation suite complete.";
+  $("#backtestStatus").textContent="v21 model search complete.";
+
   $("#backtestResults").innerHTML=`
-    <div class="validation-decision ${model.status==="validated"?"decision-pass":"decision-neutral"}">
-      <b>${model.status==="validated"?"Predictive edge validated":"Predictive edge not established"}</b>
+    <div class="validation-decision ${productionPass?"decision-pass":"decision-neutral"}">
+      <b>${productionPass?"New predictive champion promoted":"No new predictive champion"}</b>
       <p>${decision}</p>
     </div>
 
     <div class="bt-grid">
-      <div class="bt-card"><b>${reports.length}</b><small>development windows</small></div>
-      <div class="bt-card"><b>${windowSize}</b><small>draws per window</small></div>
-      <div class="bt-card"><b>${holdoutSize}</b><small>untouched holdout draws</small></div>
-      <div class="bt-card"><b>${model.holdoutN||0}</b><small>holdout observations</small></div>
-      <div class="bt-card"><b>${model.holdoutN?model.holdoutMean.toFixed(1):"50.0"}th</b><small>combined holdout percentile</small></div>
-      <div class="bt-card"><b>${model.starStatus}</b><small>Lucky Star prediction</small></div>
-      <div class="bt-card"><b>${portfolioBaseline}</b><small>portfolio baseline</small></div>
-      <div class="bt-card"><b>${draws.length}</b><small>local historical draws</small></div>
+      <div class="bt-card"><b>31</b><small>factor combinations searched</small></div>
+      <div class="bt-card"><b>22</b><small>direction/horizon variants tested</small></div>
+      <div class="bt-card"><b>${gateSize}</b><small>reserved gate draws</small></div>
+      <div class="bt-card"><b>${arenaSize}</b><small>final arena draws</small></div>
+      <div class="bt-card"><b>${gate.n?gate.mean.toFixed(1)+"th":"not run"}</b><small>gate percentile</small></div>
+      <div class="bt-card"><b>${arenaNeutral.n?arenaNeutral.mean.toFixed(1)+"th":"not run"}</b><small>final arena percentile</small></div>
+      <div class="bt-card"><b>${pooled.length?mean(pooled).toFixed(1)+"th":"not run"}</b><small>pooled reserved percentile</small></div>
+      <div class="bt-card"><b>${finalSaved.status}</b><small>production status</small></div>
     </div>
 
-    <table class="bt-table">
-      <tr><th>Predictive factor</th><th>Mean lift</th><th>Positive windows</th><th>Decision</th></tr>
-      ${rows}
-    </table>
+    <div class="settings-card">
+      <b>Best signal variant per factor</b>
+      <table class="bt-table">
+        <tr><th>Factor</th><th>Best development variant</th><th>Mean lift</th><th>Positive windows</th></tr>
+        ${factorRows}
+      </table>
+    </div>
 
-    <div class="settings-card" style="margin-top:12px">
-      <b>Untouched holdout</b>
+    <div class="settings-card">
+      <b>Top development models</b>
+      <table class="bt-table">
+        <tr><th>#</th><th>Model</th><th>Mean lift</th><th>Positive windows</th><th>Dev score</th></tr>
+        ${topModels}
+      </table>
+    </div>
+
+    <div class="settings-card">
+      <b>Reserved evidence</b>
       <p class="muted">
-        Combined predictive percentile:
-        ${holdout.combined.n?holdout.combined.mean.toFixed(2):"50.00"}th.
-        95% lift CI:
-        ${holdout.combined.n?formatCI(holdout.combined.ci,2):"not applicable"}.
+        Gate: ${gate.n?`${gate.mean.toFixed(2)}th percentile · 95% lift CI ${formatCI(gate.ci,2)} · ${gatePass?"directional pass":"fail"}`:"NOT RUN"}.
       </p>
       <p class="muted">
-        Low-sharing was not permitted inside prediction. Validation respects UK Lotto's historical
-        1–49 / 1–59 eras and EuroMillions' historical Lucky Star pool changes.
+        Final arena: ${arenaNeutral.n?`${arenaNeutral.mean.toFixed(2)}th percentile · 95% lift CI ${formatCI(arenaNeutral.ci,2)} · ${arenaPass?"directional pass":"fail"}`:"NOT RUN"}.
+      </p>
+      <p class="muted">
+        Pooled reserved evidence: ${mean(pooled).toFixed(2)}th ·
+        95% lift CI ${formatCI(pooledCI,2)}.
+      </p>
+      <p class="muted">
+        Challenger vs current champion in final arena:
+        ${formatSigned(arenaVsChampion.diff,2)} percentile points ·
+        CI ${formatCI(arenaVsChampion.ci,2)}.
+      </p>
+    </div>
+
+    <div class="settings-card">
+      <b>What v21 changed</b>
+      <p class="muted">
+        Development chooses the best normal/inverse direction and horizon for each factor,
+        searches all 31 non-empty factor subsets, and freezes one challenger before any reserved data is used.
+      </p>
+      <p class="muted">
+        A challenger must then survive a validation gate and the newer final arena.
+        The final arena is also where it is compared against an existing validated champion.
       </p>
       <p class="ci-note">
-        Development windows choose candidate factors. The newest holdout only decides whether the
-        production predictor is allowed to switch on. Failure activates a neutral portfolio fallback.
+        A failed challenger is not tuned against the reserved result. Run the search again only after
+        meaningfully newer draw data has accumulated; repeatedly optimising against the same holdout would invalidate it.
       </p>
-    </div>`;
+    </div>
+  `;
 
   renderProductionStatus();
   renderValidatedModelStatus();
-  renderWeightStatus();
-  renderConcentrationInfo();
+  renderHoldoutSafetyStatus();
   btn.disabled=false;
 }
+
 
 async function runBacktest(){
   const requested=Number($("#testSize").value);
@@ -2119,9 +2571,13 @@ function renderValidatedModelStatus(){
   const m=getValidatedModel();
   const el=$("#validatedModelStatus");
   if(el){
-    const labels={historical:"history",recent:"recent",overdue:"overdue",pairStrength:"pairs",structure:"structure"};
-    const factors=(m.eligibleFactors||[]).map(k=>labels[k]||k).join(", ")||"none";
-    el.textContent=`${validatedStatusText()}. Predictive factors: ${factors}. Portfolio baseline: ${m.portfolioBaseline||"not calibrated"}. Dataset at validation: ${m.datasetCount||0} draws.`;
+    const model=(m.terms||[]).length
+      ? m.terms.map(termLabel).join(" + ")
+      : "none";
+    el.textContent=
+      `${validatedStatusText()}. Production model: ${model}. `+
+      `Portfolio baseline: ${m.portfolioBaseline||"not calibrated"}. `+
+      `Dataset at last search: ${m.datasetCount||0} draws.`;
   }
   renderProductionStatus();
 }
@@ -2143,6 +2599,7 @@ async function switchGame(key){
   $("#importStatus").textContent=`${GAMES[key].name}: ${draws.length} draws stored locally.`;
   renderWeightStatus();
   renderValidatedModelStatus();
+  renderHoldoutSafetyStatus();
   $("#concentrationMode").value=getConcentrationMode();
   renderConcentrationInfo();
   renderIntegrity();
@@ -2215,6 +2672,7 @@ $("#concentrationMode").onchange=e=>{
 };
 renderConcentrationInfo();
 renderValidatedModelStatus();
+renderHoldoutSafetyStatus();
 $("#minusLine").onclick=()=>{$("#lineCount").textContent=lineCount=Math.max(1,lineCount-1)};
 $("#plusLine").onclick=()=>{$("#lineCount").textContent=lineCount=Math.min(10,lineCount+1)};
 $("#generateBtn").onclick=generate;
@@ -2242,7 +2700,7 @@ $$(".bottom-nav button").forEach(b=>b.onclick=()=>{
 });
 
 if("serviceWorker" in navigator){
-  navigator.serviceWorker.register("service-worker.js?version=20")
+  navigator.serviceWorker.register("service-worker.js?version=21.1")
     .then(reg=>{
       // Check for a newer worker after the app has already rendered.
       setTimeout(()=>reg.update().catch(()=>{}),1500);

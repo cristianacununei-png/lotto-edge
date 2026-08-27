@@ -277,3 +277,62 @@ v20 is a multi-step architecture change rather than another small scoring tweak.
 
 The production system therefore always has a useful operating mode without claiming historical
 prediction when the data does not support it.
+
+
+## v21 — Deterministic Model Search + Champion/Challenger
+
+v21 fixes the main weakness exposed by v20: individual factors are no longer required to pass
+a crude 5-of-6 gate before a candidate model can be tested.
+
+The release makes several major changes at once:
+
+1. **Signal direction search**
+   Long-term history, pair strength and structure are tested both normally and inversely.
+
+2. **Horizon search**
+   Recent and overdue signals are tested over 20, 50, 100 and 200 previous draws, in both
+   normal and inverse directions.
+
+3. **All 31 predictive factor combinations**
+   After the best development variant of each base factor is selected, every non-empty subset
+   of the five predictive factors is tested across six development windows.
+
+4. **Deterministic development controls**
+   Historical validation uses date/game-derived seeded random controls, so repeated validation
+   on the same data does not change simply because Math.random produced a different sample.
+
+5. **Two reserved production gates**
+   The selected challenger is frozen before reserved data is touched. It is tested first on a
+   reserved validation gate and then on a newer final confirmation arena. Production promotion
+   requires positive pooled reserved evidence with a 95% confidence interval above zero.
+
+6. **Champion vs challenger**
+   If a v21 predictive champion already exists, a new challenger is compared against it in the
+   final arena. A failed challenger does not replace a validated champion.
+
+Low-sharing remains outside draw prediction and remains only a portfolio/prize-sharing heuristic.
+Lucky Stars remain independently validated.
+
+A failed search should not be repeatedly re-tuned against the same reserved data. The correct
+next trigger for a fresh challenger is materially newer draw history.
+
+
+## v21.1 — Holdout-safe production semantics
+
+v21.1 incorporates a methodological correction before further model work:
+
+- Reserved production evidence is never displayed as a numeric percentile when it was not actually evaluated.
+  An unevaluated gate/arena is shown as **NOT RUN**, not as 50th percentile.
+- The app records a dataset fingerprint when a production validation run consumes its reserved gate and
+  final arena. Re-running production validation on the exact same dataset is blocked so the same holdout
+  cannot silently become development data after repeated tweaks.
+- The UI explicitly separates three engines:
+  1. **Draw Model** — historical prediction; must pass out-of-sample validation.
+  2. **Player Model** — low-sharing heuristic; may affect prize-sharing risk, not draw probability, and is
+     explicitly labelled as not yet empirically validated.
+  3. **Portfolio Optimiser** — line overlap, coverage and concentration.
+- Portfolio Edge therefore remains useful even when the Draw Model is neutral, while the Player Model's
+  current heuristic status is visible rather than being mistaken for validated predictive evidence.
+
+A future fresh production challenge should be triggered by materially newer historical draw data, not by
+repeatedly tuning against the same reserved block.

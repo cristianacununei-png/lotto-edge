@@ -175,3 +175,28 @@ input[type=file]{width:100%;color:var(--muted);padding:10px 0}
 
 .advanced-tests{margin-top:12px;border:1px solid var(--line);border-radius:14px;padding:10px;background:#0d1017}
 .advanced-tests summary{cursor:pointer;font-size:12px;font-weight:800;color:var(--muted);padding:3px 2px 7px}
+
+
+/* v21 Model Search */
+.bt-table td:nth-child(2){max-width:330px;white-space:normal}
+@media(max-width:620px){
+  .bt-table{font-size:9px}
+  .bt-table th,.bt-table td{padding:7px 3px}
+  .bt-table td:nth-child(2){max-width:180px}
+}
+
+
+/* v21.1 holdout safety + architecture */
+.holdout-safety{
+  margin-top:10px;
+  border:1px solid var(--line);
+  border-radius:12px;
+  padding:10px;
+  background:#0d1017;
+}
+.holdout-safety b,.holdout-safety span{display:block}
+.holdout-safety b{font-size:12px}
+.holdout-safety span{font-size:10px;line-height:1.45;color:var(--muted);margin-top:3px}
+.holdout-safety.holdout-fresh{border-color:rgba(232,255,84,.45)}
+.holdout-safety.holdout-used{border-color:#555d6b}
+.production-status span strong{color:var(--text)}
