@@ -1,15 +1,15 @@
 <!doctype html>
 <html lang="en">
 <head>
-  <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover,user-scalable=no" />
-  <meta name="theme-color" content="#090b10" />
-  <meta name="apple-mobile-web-app-capable" content="yes" />
-  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
-  <meta name="apple-mobile-web-app-title" content="Lotto Edge" />
-  <link rel="manifest" href="manifest.webmanifest" />
-  <link rel="apple-touch-icon" href="icon-192.png" />
-  <link rel="stylesheet" href="app.css" />
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover,user-scalable=no"/>
+  <meta name="theme-color" content="#090b10"/>
+  <meta name="apple-mobile-web-app-capable" content="yes"/>
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent"/>
+  <meta name="apple-mobile-web-app-title" content="Lotto Edge"/>
+  <link rel="manifest" href="manifest.webmanifest"/>
+  <link rel="apple-touch-icon" href="icon-192.png"/>
+  <link rel="stylesheet" href="app.css"/>
   <title>Lotto Edge</title>
 </head>
 <body>
@@ -19,22 +19,22 @@
       <div class="eyebrow" id="gameLabel">UK LOTTO · 6 / 59</div>
       <h1>Lotto Edge</h1>
     </div>
-    <button id="installBtn" class="icon-btn hidden" aria-label="Install app">＋</button>
   </header>
 
   <main>
     <section id="pickScreen" class="screen active">
       <div class="hero-card">
         <span class="label">Game</span>
-        <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-bottom:14px">
-          <button id="lottoGame" class="secondary" style="min-height:44px">Lotto</button>
-          <button id="euroGame" class="secondary" style="min-height:44px">EuroMillions</button>
+        <div class="game-toggle">
+          <button id="lottoGame" class="game-btn active">Lotto</button>
+          <button id="euroGame" class="game-btn">EuroMillions</button>
         </div>
+
         <div class="hero-top">
           <div>
-            <span class="label">Strategy</span>
+            <span class="label">Mode</span>
             <select id="strategy">
-              <option selected>Best Chance</option>
+              <option selected>Edge AI</option>
               <option>Balanced</option>
               <option>Low sharing risk</option>
               <option>Hot numbers</option>
@@ -49,6 +49,7 @@
             </div>
           </div>
         </div>
+
         <p id="strategyInfo" class="muted"></p>
         <button id="generateBtn" class="generate">GENERATE MY NUMBERS</button>
       </div>
@@ -59,27 +60,53 @@
         <div><span id="overdueNumber">—</span><small>overdue</small></div>
       </div>
 
-      <section id="results"></section><div id="euroNote" class="status"></div>
-      <p class="legal">Every valid line has the same mathematical probability in a fair draw. Strategy scores are analytical rankings, not win probabilities.</p>
+      <div id="confidenceCard" class="confidence-card hidden"></div>
+      <section id="results"></section>
+
+      <p class="legal">
+        Edge AI ranks historical patterns; it does not change the mathematical probability
+        of a valid combination in a fair lottery.
+      </p>
     </section>
 
     <section id="statsScreen" class="screen">
       <div class="section-head">
-        <h2>Number analysis</h2>
-        <button id="refreshBtn" class="secondary">Check updates</button>
+        <h2>Analysis</h2>
+        <button id="refreshBtn" class="secondary">Refresh data</button>
       </div>
       <div id="updateStatus" class="status"></div>
-      <div class="segmented">
+
+      <div class="segmented four">
         <button data-stat="hot" class="active">Hot</button>
         <button data-stat="overdue">Overdue</button>
         <button data-stat="pairs">Pairs</button>
+        <button data-stat="heat">Heatmap</button>
       </div>
       <div id="statList" class="stat-list"></div>
     </section>
 
+    <section id="backtestScreen" class="screen">
+      <h2>Backtest</h2>
+      <div class="settings-card">
+        <p class="muted">
+          Walk-forward validation: each test uses only draws that occurred before the draw being tested.
+          Edge AI is compared with the same number of random lines.
+        </p>
+        <label class="label" for="testSize">Historical draws to test</label>
+        <select id="testSize">
+          <option value="50">50 draws</option>
+          <option value="100" selected>100 draws</option>
+          <option value="200">200 draws</option>
+        </select>
+        <button id="runBacktest" class="generate mini">RUN BACKTEST</button>
+        <div id="backtestStatus" class="status"></div>
+      </div>
+      <div id="backtestResults"></div>
+    </section>
+
     <section id="historyScreen" class="screen">
       <div class="section-head">
-        <h2>My picks</h2>
+        <h2>My Picks</h2>
         <button id="clearHistory" class="secondary danger">Clear</button>
       </div>
       <div id="ticketHistory"></div>
@@ -87,38 +114,31 @@
 
     <section id="settingsScreen" class="screen">
       <h2>Data & app</h2>
-
       <div class="settings-card">
-        <h3>Historical data</h3>
-        <p class="muted">The app stores draw history locally on this phone. You can import a CSV at any time.</p>
-        <input type="file" id="csvInput" accept=".csv,text/csv" />
+        <h3>Historical draws</h3>
+        <p class="muted">Import a historical CSV for the selected game. It is stored locally on this device.</p>
+        <input type="file" id="csvInput" accept=".csv,text/csv"/>
         <button id="importBtn" class="secondary wide">Import CSV</button>
         <div id="importStatus" class="status"></div>
       </div>
-
       <div class="settings-card">
-        <h3>Optional live update source</h3>
-        <p class="muted">Paste a public CSV URL if you want Lotto Edge to check for new draws only when you open the app or tap Check updates.</p>
-        <input id="updateUrl" type="url" placeholder="https://example.com/lotto.csv" />
-        <button id="saveUrlBtn" class="secondary wide">Save update source</button>
-        <div id="urlStatus" class="status"></div>
-      </div>
-
-      <div class="settings-card">
-        <h3>Offline mode</h3>
-        <p class="muted">Once installed, the interface, number engine, saved picks and local draw database work without internet.</p>
+        <h3>Model</h3>
+        <p class="muted">
+          Edge AI combines long-term frequency, recent trend, overdue behaviour, pair strength,
+          draw structure and ticket diversification. EuroMillions Lucky Stars are modelled separately.
+        </p>
       </div>
     </section>
   </main>
 
-  <nav class="bottom-nav">
+  <nav class="bottom-nav five">
     <button data-screen="pickScreen" class="active"><b>🎯</b><span>Pick</span></button>
     <button data-screen="statsScreen"><b>📊</b><span>Stats</span></button>
+    <button data-screen="backtestScreen"><b>🧪</b><span>Backtest</span></button>
     <button data-screen="historyScreen"><b>🧾</b><span>My Picks</span></button>
     <button data-screen="settingsScreen"><b>⚙️</b><span>Settings</span></button>
   </nav>
 </div>
-
 <script src="app.js"></script>
 </body>
 </html>

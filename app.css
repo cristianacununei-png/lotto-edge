@@ -50,3 +50,30 @@ select,input[type="url"]{width:100%;background:#0d1017;color:var(--text);border:
 input[type=file]{width:100%;color:var(--muted);padding:10px 0}
 .empty{padding:28px 10px;text-align:center;color:var(--muted)}
 @media (max-width:390px){.ball{font-size:15px}.app-shell{padding-left:10px;padding-right:10px}.hero-card{padding:13px}}
+
+.game-toggle{display:grid;grid-template-columns:1fr 1fr;gap:7px;margin-bottom:15px}
+.game-btn{min-height:48px;border:1px solid var(--line);background:#0d1017;color:var(--text);border-radius:14px;font-weight:800}
+.game-btn.active{border-color:var(--accent);box-shadow:inset 0 0 0 1px var(--accent)}
+.bottom-nav.five{grid-template-columns:repeat(5,1fr)}
+.segmented.four{grid-template-columns:repeat(4,1fr)}
+.generate.mini{margin-top:12px;min-height:52px}
+.confidence-card{border:1px solid var(--line);background:var(--card);border-radius:18px;padding:13px 14px;margin:9px 0 13px}
+.confidence-card strong{font-size:18px}
+.model-grid{display:grid;grid-template-columns:repeat(2,1fr);gap:7px;margin-top:10px}
+.model-chip{border:1px solid var(--line);border-radius:12px;padding:8px}
+.model-chip b{display:block;font-size:15px}
+.model-chip small{color:var(--muted);font-size:10px}
+.heat-grid{display:grid;grid-template-columns:repeat(7,1fr);gap:6px}
+.heat-ball{aspect-ratio:1;border-radius:50%;display:flex;align-items:center;justify-content:center;font-weight:850;font-size:12px;border:1px solid var(--line);background:var(--card)}
+.bt-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin:10px 0}
+.bt-card{border:1px solid var(--line);background:var(--card);border-radius:16px;padding:12px}
+.bt-card b{font-size:20px;display:block}.bt-card small{color:var(--muted)}
+.bt-table{width:100%;border-collapse:collapse;font-size:12px}
+.bt-table th,.bt-table td{padding:9px 6px;border-bottom:1px solid var(--line);text-align:right}
+.bt-table th:first-child,.bt-table td:first-child{text-align:left}
+.progress{height:8px;background:#202633;border-radius:999px;overflow:hidden;margin-top:8px}.progress i{display:block;height:100%;background:var(--accent)}
+@media(max-width:420px){
+  .bottom-nav span{font-size:9px}
+  .segmented.four button{font-size:11px;padding:8px 2px}
+  .heat-grid{grid-template-columns:repeat(6,1fr)}
+}

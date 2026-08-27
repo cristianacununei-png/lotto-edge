@@ -1,7 +1,7 @@
 
-const CACHE="lotto-edge-offline-v4";
+const CACHE="lotto-edge-v5";
 const ASSETS=[
-  "./","index.html","app.css","app.js","manifest.webmanifest","icon-192.png","icon-512.png"
+  "./","index.html","app.css","app.js","manifest.webmanifest","icon-192.png","icon-512.png","euromillions_history.csv"
 ];
 
 self.addEventListener("install",e=>{
