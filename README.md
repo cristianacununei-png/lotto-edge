@@ -256,3 +256,24 @@ Changes:
 
 A single ablation result should not automatically change the production model. A factor should
 be reconsidered only if the same result persists across different historical windows.
+
+
+## v20 — Validated Edge major model reset
+
+v20 is a multi-step architecture change rather than another small scoring tweak.
+
+1. Validated Edge is the production mode. Historical factors are blocked from production until
+   they pass rolling development tests and a newer untouched holdout.
+2. Prediction and payout-sharing logic are separated. Low-sharing is no longer part of the
+   predictive score; it is used only for portfolio/prize-sharing optimisation.
+3. A one-click Full Validation Suite runs six non-overlapping development windows, stable-factor
+   selection, an untouched holdout, Lucky Star validation and portfolio-style calibration.
+4. Validation is reproducible and rule-era aware. UK Lotto's 1–49 / 1–59 change and EuroMillions'
+   historical 9 / 11 / 12 Lucky Star pools are respected.
+5. If the predictive model fails holdout, production automatically falls back to Portfolio Edge:
+   neutral draw selection, diversified coverage, duplicate control and low-sharing optimisation.
+6. Lucky Star prediction has its own holdout gate. If it fails, Stars are selected neutrally and
+   diversified instead of using unsupported historical weighting.
+
+The production system therefore always has a useful operating mode without claiming historical
+prediction when the data does not support it.

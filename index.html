@@ -7,9 +7,9 @@
   <meta name="apple-mobile-web-app-capable" content="yes"/>
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent"/>
   <meta name="apple-mobile-web-app-title" content="Lotto Edge"/>
-  <link rel="manifest" href="manifest.webmanifest?v=19"/>
+  <link rel="manifest" href="manifest.webmanifest?v=20"/>
   <link rel="apple-touch-icon" href="icon-192.png"/>
-  <link rel="stylesheet" href="app.css?v=19"/>
+  <link rel="stylesheet" href="app.css?v=20"/>
   <title>Lotto Edge</title>
 </head>
 <body>
@@ -17,7 +17,7 @@
   <header class="topbar">
     <div>
       <div class="eyebrow" id="gameLabel">UK LOTTO · 6 / 59</div>
-      <div class="title-row"><h1>Lotto Edge</h1><span class="version-badge" id="versionBadge">v19</span></div>
+      <div class="title-row"><h1>Lotto Edge</h1><span class="version-badge" id="versionBadge">v20</span></div>
     </div>
   </header>
 
@@ -34,7 +34,8 @@
           <div>
             <span class="label">Mode</span>
             <select id="strategy">
-              <option selected>Edge AI</option>
+              <option selected>Validated Edge</option>
+              <option>Edge AI Research</option>
               <option>Balanced</option>
               <option>Low sharing risk</option>
               <option>Hot numbers</option>
@@ -51,6 +52,7 @@
         </div>
 
         <p id="strategyInfo" class="muted"></p>
+        <div id="productionStatus" class="production-status"></div>
 
         <div id="convictionControls" class="conviction-controls">
           <span class="label">Portfolio behaviour</span>
@@ -75,7 +77,7 @@
 
       <div id="confidenceCard" class="confidence-card hidden"></div>
       <div id="modelLegend" class="model-legend">
-        Edge AI score = weighted historical fit, not mathematical win probability.
+        Validated Edge uses historical prediction only if it survives out-of-sample validation. Coverage and low-sharing optimise the portfolio, not draw probability.
       </div>
       <section id="results"></section>
 
@@ -125,13 +127,22 @@
           <option value="1000">1,000 controls</option>
         </select>
 
-        <button id="runBacktest" class="generate mini">RUN ROBUST BACKTEST</button>
-        <button id="calibrateModel" class="secondary wide">CALIBRATE EDGE AI WEIGHTS</button>
-        <button id="calibrateConcentration" class="secondary wide">CALIBRATE PORTFOLIO CONCENTRATION</button>
-        <button id="comparePortfolioModes" class="secondary wide">COMPARE PORTFOLIO MODES</button>
-        <button id="runAblation" class="secondary wide">RUN FACTOR ABLATION</button>
+        <button id="runFullValidation" class="generate mini">RUN FULL VALIDATION SUITE</button>
         <p class="validation-note">
-          v19 validation: percentiles are tie-corrected and lift/ablation conclusions require paired 95% confidence intervals.
+          One run performs six rolling development tests, stable-factor selection, an untouched holdout,
+          Lucky Star validation and portfolio-style calibration, then configures production mode automatically.
+        </p>
+
+        <details class="advanced-tests">
+          <summary>Advanced / research tests</summary>
+          <button id="runBacktest" class="secondary wide">Run Monte Carlo backtest</button>
+          <button id="calibrateModel" class="secondary wide">Calibrate research weights</button>
+          <button id="calibrateConcentration" class="secondary wide">Calibrate portfolio concentration</button>
+          <button id="comparePortfolioModes" class="secondary wide">Compare portfolio modes</button>
+          <button id="runAblation" class="secondary wide">Run factor ablation</button>
+        </details>
+        <p class="validation-note">
+          v20 production rule: historical factors cannot influence Validated Edge unless they survive the rolling tests and untouched holdout.
         </p>
         <div id="backtestStatus" class="status"></div>
       </div>
@@ -160,10 +171,14 @@
         <p id="integrityStatus" class="muted"></p>
       </div>
       <div class="settings-card">
-        <h3>Model</h3>
+        <h3>Validated production model</h3>
+        <p id="validatedModelStatus" class="muted"></p>
+      </div>
+      <div class="settings-card">
+        <h3>Research model</h3>
         <p class="muted">
-          Edge AI combines long-term frequency, recent trend, overdue behaviour, pair strength,
-          draw structure and ticket diversification. EuroMillions Lucky Stars are modelled separately.
+          The research model combines long-term frequency, recent trend, overdue behaviour, pair strength
+          and draw structure. Low-sharing is deliberately kept outside prediction.
         </p>
         <p id="weightStatus" class="muted"></p>
         <p id="concentrationStatus" class="muted"></p>
@@ -179,6 +194,6 @@
     <button data-screen="settingsScreen"><b>⚙️</b><span>Settings</span></button>
   </nav>
 </div>
-<script src="app.js?v=19"></script>
+<script src="app.js?v=20"></script>
 </body>
 </html>

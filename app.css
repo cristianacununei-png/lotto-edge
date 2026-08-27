@@ -156,3 +156,22 @@ input[type=file]{width:100%;color:var(--muted);padding:10px 0}
   .ablation-table{font-size:10px}
   .ablation-table th,.ablation-table td{padding:8px 3px}
 }
+
+
+/* v20 Validated Edge */
+.production-status{border:1px solid var(--line);border-radius:12px;padding:9px 10px;margin:8px 0 10px;background:#0d1017}
+.production-status b,.production-status span{display:block}
+.production-status b{font-size:12px}
+.production-status span{font-size:10px;color:var(--muted);margin-top:3px;line-height:1.4}
+.production-status.status-good{border-color:rgba(232,255,84,.65)}
+.production-status.status-warn{border-color:#545b68}
+.production-status.status-neutral{border-style:dashed}
+
+.validation-decision{border:1px solid var(--line);border-radius:18px;padding:14px;margin:10px 0}
+.validation-decision b{font-size:19px}
+.validation-decision p{color:var(--muted);font-size:12px;line-height:1.5;margin-bottom:0}
+.validation-decision.decision-pass{border-color:rgba(232,255,84,.7)}
+.validation-decision.decision-neutral{background:var(--card)}
+
+.advanced-tests{margin-top:12px;border:1px solid var(--line);border-radius:14px;padding:10px;background:#0d1017}
+.advanced-tests summary{cursor:pointer;font-size:12px;font-weight:800;color:var(--muted);padding:3px 2px 7px}
