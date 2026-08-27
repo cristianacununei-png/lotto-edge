@@ -30,3 +30,12 @@ Historical backtest results are descriptive and do not establish that future lot
 
 Upload all files in this folder over the existing GitHub Pages repository and commit to `main`.
 GitHub Pages will redeploy automatically.
+
+## v6 — Full UK Lotto data engine
+
+UK Lotto no longer relies on the five-row demonstration set when internet access is available.
+On first launch it downloads the full historical UK National Lottery archive (1994 onward)
+from the configured public history API and stores it locally on the device. Thereafter the
+app works offline and refreshes stale data when internet is available.
+
+The same historical dataset is used by Edge AI, heatmaps, frequency analysis and walk-forward backtesting.

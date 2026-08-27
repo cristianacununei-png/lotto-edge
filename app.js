@@ -4,6 +4,8 @@ const $$ = s => [...document.querySelectorAll(s)];
 
 const EURO_REMOTE =
   "https://raw.githubusercontent.com/daowa89/lottery-archive/main/eu/euromillions/results.csv";
+const LOTTO_REMOTE =
+  "https://www.lottometrics.app/api/export/draws/uknationallottery/all/json";
 
 const GAMES = {
   lotto:{name:"Lotto",label:"UK LOTTO · 6 / 59",max:59,picks:6,stars:0,starMax:0,storage:"lottoEdgeDraws"},
@@ -69,6 +71,24 @@ function parseCsv(text, gameKey){
   return out;
 }
 
+function parseLottoJson(payload){
+  try{
+    const rows=typeof payload==="string" ? JSON.parse(payload) : payload;
+    if(!Array.isArray(rows)) return [];
+    return rows.map(r=>{
+      const nums=String(r.main_numbers||"").split(",").map(Number).filter(Number.isFinite);
+      if(nums.length!==6 || new Set(nums).size!==6 || nums.some(n=>n<1||n>59)) return null;
+      const bonus=Number(r.extra_numbers);
+      return {
+        date:r.draw_date||"",
+        numbers:nums.sort((a,b)=>a-b),
+        stars:[],
+        bonus:Number.isFinite(bonus)?bonus:null
+      };
+    }).filter(Boolean);
+  }catch{return []}
+}
+
 function dedupe(items){
   const seen=new Set(),out=[];
   for(const d of items){
@@ -86,7 +106,23 @@ function saveStored(key,d){localStorage.setItem(GAMES[key].storage,JSON.stringif
 
 async function ensureData(key){
   if(key==="lotto"){
-    let d=loadStored(key);if(!d.length){d=LOTTO_DEMO;saveStored(key,d)}return d;
+    let d=loadStored(key);
+    if(!d.length && navigator.onLine){
+      try{
+        const r=await fetch(LOTTO_REMOTE,{cache:"no-store"});
+        if(r.ok){
+          const full=parseLottoJson(await r.json());
+          if(full.length>1000){
+            // Source arrives oldest-first; model expects newest-first.
+            d=[...full].reverse();
+            saveStored(key,d);
+            localStorage.setItem("lottoEdgeLottoLastUpdate",Date.now());
+          }
+        }
+      }catch{}
+    }
+    if(!d.length){d=LOTTO_DEMO;saveStored(key,d)}
+    return d;
   }
   let d=loadStored(key);
   if(!d.length){
@@ -445,27 +481,51 @@ async function switchGame(key){
   $("#results").innerHTML="";$("#confidenceCard").classList.add("hidden");
   summary();renderStats(activeStat);
   $("#importStatus").textContent=`${GAMES[key].name}: ${draws.length} draws stored locally.`;
+
+  const stampKey=key==="lotto" ? "lottoEdgeLottoLastUpdate" : "lottoEdgeEuroLastUpdate";
+  const last=Number(localStorage.getItem(stampKey)||0);
+  if(navigator.onLine && Date.now()-last>12*60*60*1000){
+    setTimeout(()=>refreshData(),250);
+  }
 }
 
 async function refreshData(){
-  if(activeGame!=="euromillions"){
-    $("#updateStatus").textContent="Lotto currently uses local/imported history.";
+  if(!navigator.onLine){
+    $("#updateStatus").textContent=`Offline. Using ${draws.length} stored ${GAMES[activeGame].name} draws.`;
     return;
   }
-  if(!navigator.onLine){$("#updateStatus").textContent="Offline. Using stored EuroMillions history.";return}
+
   try{
-    $("#updateStatus").textContent="Checking EuroMillions updates…";
+    $("#updateStatus").textContent=`Checking ${GAMES[activeGame].name} updates…`;
+
+    if(activeGame==="lotto"){
+      const r=await fetch(LOTTO_REMOTE,{cache:"no-store"});
+      if(!r.ok)throw new Error();
+      const incoming=parseLottoJson(await r.json());
+      if(incoming.length<1000)throw new Error();
+      const newest=[...incoming].reverse();
+      const before=draws.length;
+      draws=dedupe([...newest,...draws]);
+      saveStored("lotto",draws);
+      localStorage.setItem("lottoEdgeLottoLastUpdate",Date.now());
+      summary();renderStats(activeStat);
+      $("#updateStatus").textContent=`Lotto updated: ${draws.length} historical draws stored.`;
+      return;
+    }
+
     const r=await fetch(EURO_REMOTE,{cache:"no-store"});
     if(!r.ok)throw new Error();
     const incoming=parseCsv(await r.text(),"euromillions");
     if(!incoming.length)throw new Error();
     const before=draws.length;
-    draws=dedupe([...incoming,...draws]);saveStored("euromillions",draws);
+    draws=dedupe([...incoming,...draws]);
+    saveStored("euromillions",draws);
     summary();renderStats(activeStat);
-    $("#updateStatus").textContent=`Updated. ${Math.max(0,draws.length-before)} new draws; ${draws.length} total.`;
-  }catch{$("#updateStatus").textContent="Update unavailable. Stored history is still usable offline."}
+    $("#updateStatus").textContent=`EuroMillions updated: ${draws.length} historical draws stored.`;
+  }catch{
+    $("#updateStatus").textContent="Automatic update unavailable right now. Stored history remains usable offline.";
+  }
 }
-
 async function importCsv(){
   const f=$("#csvInput").files[0];
   if(!f){$("#importStatus").textContent="Choose a CSV first.";return}
