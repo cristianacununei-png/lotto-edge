@@ -37,6 +37,7 @@ const LOTTO_DEMO = [
 ];
 
 const descriptions = {
+  "Best Chance":"Multi-factor model: long-term frequency, recent form, overdue status, pair strength, historical structure and line diversification. This is an analytical ranking, not a higher mathematical lottery probability.",
   "Balanced":"Uses historically typical structure while avoiding overly human-looking combinations.",
   "Low sharing risk":"Avoids birthday-heavy, sequential and other common human-picking patterns.",
   "Hot numbers":"Favours numbers that have appeared more often historically.",
@@ -261,18 +262,60 @@ function scoreLine(line,strategy,s){
   const hot=line.reduce((a,n)=>a+zScore(s.freq,n),0)/line.length;
   const overdue=line.reduce((a,n)=>a+zScore(s.last,n),0)/line.length;
 
+  // Recent-form signal from the most recent ~10% of the history, capped at 120 draws.
+  const cfg=GAMES[activeGame];
+  const recentN=Math.max(20,Math.min(120,Math.round(draws.length*.10)));
+  const recentFreq=Array(cfg.max+1).fill(0);
+  draws.slice(0,recentN).forEach(d=>d.numbers.forEach(n=>recentFreq[n]++));
+  const recent=line.reduce((a,n)=>a+zScore(recentFreq,n),0)/line.length;
+
+  // Pair strength: how often the pairs in this candidate occurred together historically.
+  let pairTotal=0, pairCount=0;
+  for(let i=0;i<line.length;i++){
+    for(let j=i+1;j<line.length;j++){
+      pairTotal += s.pairs[`${line[i]}-${line[j]}`] || 0;
+      pairCount++;
+    }
+  }
+  const pairAvg=pairCount ? pairTotal/pairCount : 0;
+  const allPairVals=Object.values(s.pairs);
+  const pairMean=allPairVals.length ? allPairVals.reduce((a,b)=>a+b,0)/allPairVals.length : 0;
+  const pairSd=Math.sqrt(allPairVals.length ? allPairVals.reduce((a,x)=>a+(x-pairMean)**2,0)/allPairVals.length : 1) || 1;
+  const pairZ=(pairAvg-pairMean)/pairSd;
+
   let score=50;
   if(strategy==="Balanced") score=.55*balance+.45*sharing;
   if(strategy==="Low sharing risk") score=.75*sharing+.25*balance;
   if(strategy==="Hot numbers") score=50+hot*14+sharing*.22+balance*.18;
   if(strategy==="Overdue numbers") score=50+overdue*14+sharing*.22+balance*.18;
 
+  // "Best Chance" is deliberately multi-factor rather than a single hot/overdue heuristic.
+  // Signals are compressed to 0..100 so one noisy factor cannot dominate.
+  if(strategy==="Best Chance"){
+    const norm = z => Math.max(0,Math.min(100,50+z*15));
+    const historical=norm(hot);
+    const recentScore=norm(recent);
+    const overdueScore=norm(overdue);
+    const pairScore=norm(pairZ);
+    score =
+      historical*.20 +
+      recentScore*.20 +
+      overdueScore*.12 +
+      pairScore*.18 +
+      balance*.22 +
+      sharing*.08;
+    return {
+      score:Math.max(0,Math.min(100,score)),
+      balance,sharing,sum:f.sum,
+      historical,recent:recentScore,pairStrength:pairScore,overdueFit:overdueScore
+    };
+  }
+
   return {
     score:Math.max(0,Math.min(100,score)),
     balance,sharing,sum:f.sum
   };
 }
-
 function chooseStars(strategy,s){
   const cfg=GAMES[activeGame];
   if(!cfg.stars) return [];
@@ -283,6 +326,7 @@ function chooseStars(strategy,s){
     let value=0;
     if(strategy==="Hot numbers") value=zScore(s.starFreq,star);
     else if(strategy==="Overdue numbers") value=zScore(s.starLast,star);
+    else if(strategy==="Best Chance") value=.45*zScore(s.starFreq,star)+.25*zScore(s.starLast,star)+Math.random()*.30;
     else value=.5*zScore(s.starFreq,star)+.2*zScore(s.starLast,star)+Math.random()*.3;
     ranked.push({star,value:value+Math.random()*.12});
   }
@@ -306,7 +350,7 @@ function generate(){
     }
   } else {
     const seen=new Set();
-    const trials=Math.max(7000,lineCount*1200);
+    const trials=strategy==="Best Chance" ? Math.max(30000,lineCount*5000) : Math.max(7000,lineCount*1200);
     for(let i=0;i<trials;i++){
       const line=sample(cfg.max,cfg.picks), k=line.join(",");
       if(seen.has(k)) continue;
@@ -327,6 +371,21 @@ function generate(){
       if(picked.length===lineCount) break;
     }
     pool.splice(0,pool.length,...picked);
+
+    // Reduce repeated Lucky-Star pairs across a multi-line EuroMillions ticket.
+    if(cfg.stars){
+      const usedStarPairs=new Set();
+      pool.forEach(item=>{
+        let best=item.stars, tries=0;
+        while(tries++<30){
+          const candidate=chooseStars(strategy,s);
+          const key=candidate.join("-");
+          if(!usedStarPairs.has(key)){ best=candidate; break; }
+        }
+        item.stars=best;
+        usedStarPairs.add(best.join("-"));
+      });
+    }
   }
 
   const stamp=new Date().toISOString();
@@ -353,7 +412,12 @@ function renderPicks(items){
         ${x.detail?
           `<span>Balance ${Math.round(x.detail.balance)}</span>
            <span>Low-sharing ${Math.round(x.detail.sharing)}</span>
-           <span>Sum ${x.detail.sum}</span>`:
+           <span>Sum ${x.detail.sum}</span>
+           ${x.strategy==="Best Chance" && x.detail.historical!==undefined ?
+             `<span>History ${Math.round(x.detail.historical)}</span>
+              <span>Recent ${Math.round(x.detail.recent)}</span>
+              <span>Pairs ${Math.round(x.detail.pairStrength)}</span>
+              <span>Overdue ${Math.round(x.detail.overdueFit)}</span>`:""}`:
           `<span>Pure random selection</span>`}
       </div>
     </div>`).join("");

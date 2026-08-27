@@ -1,5 +1,5 @@
 
-const CACHE="lotto-edge-offline-v3";
+const CACHE="lotto-edge-offline-v4";
 const ASSETS=[
   "./","index.html","app.css","app.js","manifest.webmanifest","icon-192.png","icon-512.png"
 ];
