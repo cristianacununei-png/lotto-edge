@@ -1,11 +1,36 @@
 
 const $ = s => document.querySelector(s);
+
+const APP_VERSION="7.0.0";
+
+async function checkAppVersion(){
+  try{
+    const r=await fetch("version.json?ts="+Date.now(),{cache:"no-store"});
+    if(!r.ok)return;
+    const v=await r.json();
+    const seen=localStorage.getItem("lottoEdgeAppVersion");
+    if(seen && seen!==v.version){
+      localStorage.setItem("lottoEdgeAppVersion",v.version);
+      // The new service worker will already be installing; reload once to pick up new shell.
+      setTimeout(()=>location.reload(),250);
+      return;
+    }
+    localStorage.setItem("lottoEdgeAppVersion",v.version);
+  }catch{}
+}
+
+
 const $$ = s => [...document.querySelectorAll(s)];
 
 const EURO_REMOTE =
   "https://raw.githubusercontent.com/daowa89/lottery-archive/main/eu/euromillions/results.csv";
 const LOTTO_REMOTE =
   "https://www.lottometrics.app/api/export/draws/uknationallottery/all/json";
+const LOTTO_SOURCES = [
+  LOTTO_REMOTE,
+  "https://corsproxy.io/?" + encodeURIComponent(LOTTO_REMOTE),
+  "https://api.allorigins.win/raw?url=" + encodeURIComponent(LOTTO_REMOTE)
+];
 
 const GAMES = {
   lotto:{name:"Lotto",label:"UK LOTTO · 6 / 59",max:59,picks:6,stars:0,starMax:0,storage:"lottoEdgeDraws"},
@@ -104,24 +129,39 @@ function loadStored(key){
 }
 function saveStored(key,d){localStorage.setItem(GAMES[key].storage,JSON.stringify(d))}
 
+async function fetchFullLottoHistory(){
+  for(const url of LOTTO_SOURCES){
+    try{
+      const r=await fetch(url,{cache:"no-store"});
+      if(!r.ok) continue;
+      const text=await r.text();
+      const parsed=parseLottoJson(text);
+      if(parsed.length>2500){
+        return [...parsed].reverse(); // source is oldest-first
+      }
+    }catch{}
+  }
+  return [];
+}
+
 async function ensureData(key){
   if(key==="lotto"){
     let d=loadStored(key);
-    if(!d.length && navigator.onLine){
-      try{
-        const r=await fetch(LOTTO_REMOTE,{cache:"no-store"});
-        if(r.ok){
-          const full=parseLottoJson(await r.json());
-          if(full.length>1000){
-            // Source arrives oldest-first; model expects newest-first.
-            d=[...full].reverse();
-            saveStored(key,d);
-            localStorage.setItem("lottoEdgeLottoLastUpdate",Date.now());
-          }
-        }
-      }catch{}
+
+    // If the device only has the old demo data, replace it immediately.
+    if((!d.length || d.length<1000) && navigator.onLine){
+      const full=await fetchFullLottoHistory();
+      if(full.length>2500){
+        d=full;
+        saveStored(key,d);
+        localStorage.setItem("lottoEdgeLottoLastUpdate",Date.now());
+      }
     }
-    if(!d.length){d=LOTTO_DEMO;saveStored(key,d)}
+
+    if(!d.length){
+      d=LOTTO_DEMO;
+      saveStored(key,d);
+    }
     return d;
   }
   let d=loadStored(key);
@@ -499,11 +539,8 @@ async function refreshData(){
     $("#updateStatus").textContent=`Checking ${GAMES[activeGame].name} updates…`;
 
     if(activeGame==="lotto"){
-      const r=await fetch(LOTTO_REMOTE,{cache:"no-store"});
-      if(!r.ok)throw new Error();
-      const incoming=parseLottoJson(await r.json());
-      if(incoming.length<1000)throw new Error();
-      const newest=[...incoming].reverse();
+      const newest=await fetchFullLottoHistory();
+      if(newest.length<2500)throw new Error();
       const before=draws.length;
       draws=dedupe([...newest,...draws]);
       saveStored("lotto",draws);
@@ -558,9 +595,21 @@ $$(".bottom-nav button").forEach(b=>b.onclick=()=>{
   if(b.dataset.screen==="historyScreen")renderHistory();
 });
 
-if("serviceWorker"in navigator)navigator.serviceWorker.register("service-worker.js");
+if("serviceWorker" in navigator){
+  navigator.serviceWorker.register("service-worker.js?version=7").then(reg=>{
+    reg.update().catch(()=>{});
+  }).catch(()=>{});
+
+  let refreshing=false;
+  navigator.serviceWorker.addEventListener("controllerchange",()=>{
+    if(refreshing)return;
+    refreshing=true;
+    location.reload();
+  });
+}
 
 (async()=>{
+  await checkAppVersion();
   await switchGame(activeGame);
   renderHistory();
 })();

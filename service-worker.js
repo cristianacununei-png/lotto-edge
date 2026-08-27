@@ -1,39 +1,48 @@
-
-const CACHE="lotto-edge-v6";
-const ASSETS=[
-  "./","index.html","app.css","app.js","manifest.webmanifest","icon-192.png","icon-512.png","euromillions_history.csv"
+const CACHE="lotto-edge-v7";
+const CORE=[
+  "./",
+  "index.html",
+  "app.css?v=7",
+  "app.js?v=7",
+  "manifest.webmanifest?v=7",
+  "icon-192.png",
+  "icon-512.png",
+  "euromillions_history.csv"
 ];
 
-self.addEventListener("install",e=>{
-  e.waitUntil(caches.open(CACHE).then(c=>c.addAll(ASSETS)));
+self.addEventListener("install",event=>{
+  event.waitUntil(caches.open(CACHE).then(cache=>cache.addAll(CORE)));
   self.skipWaiting();
 });
 
-self.addEventListener("activate",e=>{
-  e.waitUntil(
-    caches.keys().then(keys=>Promise.all(keys.filter(k=>k!==CACHE).map(k=>caches.delete(k))))
+self.addEventListener("activate",event=>{
+  event.waitUntil(
+    caches.keys()
+      .then(keys=>Promise.all(keys.filter(k=>k!==CACHE).map(k=>caches.delete(k))))
+      .then(()=>self.clients.claim())
   );
-  self.clients.claim();
 });
 
-self.addEventListener("fetch",e=>{
-  const req=e.request;
-  if(req.method!=="GET") return;
+self.addEventListener("fetch",event=>{
+  if(event.request.method!=="GET")return;
+  const url=new URL(event.request.url);
 
-  const url=new URL(req.url);
-  if(url.origin!==location.origin){
-    e.respondWith(fetch(req));
+  // Remote lottery APIs are never cached by the service worker.
+  if(url.origin!==self.location.origin){
+    event.respondWith(fetch(event.request));
     return;
   }
 
-  e.respondWith(
-    caches.match(req).then(cached=>{
-      const fresh=fetch(req).then(resp=>{
-        const clone=resp.clone();
-        caches.open(CACHE).then(c=>c.put(req,clone));
-        return resp;
-      }).catch(()=>cached);
-      return cached || fresh;
-    })
+  // Network-first: deployed GitHub files update automatically.
+  event.respondWith(
+    fetch(event.request,{cache:"no-store"})
+      .then(response=>{
+        if(response && response.ok){
+          const copy=response.clone();
+          caches.open(CACHE).then(cache=>cache.put(event.request,copy));
+        }
+        return response;
+      })
+      .catch(()=>caches.match(event.request).then(cached=>cached||caches.match("./")))
   );
 });

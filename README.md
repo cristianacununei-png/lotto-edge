@@ -39,3 +39,16 @@ from the configured public history API and stores it locally on the device. Ther
 app works offline and refreshes stale data when internet is available.
 
 The same historical dataset is used by Edge AI, heatmaps, frequency analysis and walk-forward backtesting.
+
+## v7 — Automatic app updates / cache fix
+
+The PWA now uses a network-first service worker. When online, GitHub Pages always gets the
+first chance to provide the newest HTML, JavaScript and CSS. Cached files are used only as
+the offline fallback.
+
+A version.json check plus service-worker controller-change handling automatically reloads
+the app when a new deployed version becomes active. Manual 'clear site data' should no
+longer be part of the normal update workflow.
+
+UK Lotto history also uses a direct source plus browser-CORS fallback sources, replacing
+the five-row demo dataset whenever a full archive can be reached.
